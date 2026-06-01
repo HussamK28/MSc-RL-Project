@@ -23,6 +23,8 @@ class MiniGrid(MiniGridEnv):
     
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
+        self.grid.wall_rect(0, 0, width, height)
+
         colours = ["red", "blue", "green", "yellow"]
         key_colour = random.choice(colours)
         self.mission = f"To reach the goal, you must have the {key_colour} key!"
@@ -46,22 +48,15 @@ class MiniGrid(MiniGridEnv):
             if self.grid.get(x, y) is None:
                 return (x, y)
 
+if __name__ == "__main__":
+    env = MiniGrid(render_mode="human")
+    num_tests = 10
 
-env = MiniGrid(render_mode="human")
-num_tests = 10
-for episode in range(num_tests):
-    print(f"\n=== Episode {episode+1} ===")
-    obs, info = env.reset()
+    for episode in range(num_tests):
+        print(f"\n=== Episode {episode+1} ===")
+        obs, info = env.reset()
+        env.render()
+        time.sleep(2)
 
-    obj_positions = {}
-    for x in range(env.width):
-        for y in range(env.height):
-            obj = env.grid.get(x, y)
-            if obj is not None:
-                obj_positions[(x, y)] = obj
-
-    env.render()
-    time.sleep(2)
-
-print("\n✅ Testing completed. Check positions and randomization visually.")
-env.close()
+    print("\n✅ Testing completed. Check positions and randomization visually.")
+    env.close()
