@@ -6,7 +6,7 @@ from minigrid.minigrid_env import MiniGridEnv
 from minigrid.core.mission import MissionSpace
 
 class MiniGrid(MiniGridEnv):
-    def __init__(self, size=12, max_steps=500, **kwargs):
+    def __init__(self, size=24, max_steps=800, **kwargs):
         instructions = MissionSpace(
             mission_func=lambda: "You need to find the key before getting to the goal square."
         )
@@ -25,9 +25,16 @@ class MiniGrid(MiniGridEnv):
         self.grid = Grid(width, height)
         self.grid.wall_rect(0, 0, width, height)
 
+        wall1 = width // 3
+        wall2 = (2 * width) // 3
+        for y_pos in range(1, height-1):
+            self.grid.set(wall1, y_pos, Wall())
+            self.grid.set(wall2, y_pos, Wall())
+
         colours = ["red", "blue", "green", "yellow"]
-        key_colour = random.choice(colours)
-        self.mission = f"To reach the goal, you must have the {key_colour} key!"
+        key1_colour = random.choice(colours)
+        key2_colour = random.choice([c for c in colours if c != key1_colour])
+        self.mission = f"To reach the goal, you must have the {key1_colour} key!"
 
         key_cell = self.randomCell()
         self.grid.set(*key_cell, Key(key_colour))
