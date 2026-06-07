@@ -33,7 +33,7 @@ class MetricsWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.visit_counts = {}
-        self.intrinsic_reward_scale = 0.05
+        self.intrinsic_reward_scale = 0.0
         self.episode_trajectory = []
         self.all_trajectories = []
         self.visit_heatmap = np.zeros((env.unwrapped.height, env.unwrapped.width))
@@ -123,7 +123,11 @@ model = PPO(
 
 callback = MetricsCallback()
 
-model.learn(total_timesteps=20000, callback=callback)
+model.learn(total_timesteps=5000, callback=callback)
+file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
+
+save_dir = os.path.join("results", file_name)
+os.makedirs(save_dir, exist_ok=True)
 
 returns = callback.history["return"]
 successes = callback.history["success"]
@@ -157,6 +161,11 @@ plt.title("Agent Trajectory")
 plt.xlabel("x position")
 plt.ylabel("y position")
 plt.grid(True)
+plt.savefig(
+    os.path.join(save_dir, "trajectory_graph.png"),
+    dpi=300,
+    bbox_inches="tight"
+)
 plt.show()
 
 plt.figure(figsize=(6, 6))
@@ -165,4 +174,26 @@ plt.colorbar(label="Visit count")
 plt.title("Visited State Heatmap")
 plt.xlabel("x position")
 plt.ylabel("y position")
+plt.savefig(
+    os.path.join(save_dir, "heatmap_chart.png"),
+    dpi=300,
+    bbox_inches="tight"
+)
 plt.show()
+
+with open(os.path.join(save_dir, "run_trajectories.pkl"), "wb") as f:
+    pickle.dump(env.all_trajectories, f)
+np.save(os.path.join(save_dir, "visit_heatmap.npy"),env.visit_heatmap)
+metrics = {
+    "episodes_logged": len(successes),
+    "success_rate": np.mean(successes),
+    "avg_return": np.mean(returns),
+    "avg_intrinsic_reward": np.mean(intrinsic_rewards),
+    "avg_state_coverage": np.mean(coverages),
+    "avg_extrinsic_return": np.mean(callback.history["extrinsic_return"]),
+    "time_to_first_success":
+        successes.index(1) + 1 if 1 in successes else None
+}
+
+with open(os.path.join(save_dir, "metrics.pkl"), "wb") as f:
+    pickle.dump(metrics, f)
