@@ -33,7 +33,7 @@ class MetricsWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.visit_counts = {}
-        self.intrinsic_reward_scale = 0.0
+        self.intrinsic_reward_scale = 0.1
         self.episode_trajectory = []
         self.all_trajectories = []
         self.visit_heatmap = np.zeros((env.unwrapped.height, env.unwrapped.width))
@@ -45,6 +45,17 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_states = set()
 
         self.completed_episodes = []
+        # ----- TESTING -----
+        self.key1_reached = 0
+        self.door1_opened = 0
+        self.key2_reached = 0
+        self.door2_opened = 0
+
+        self.ep_key1 = False
+        self.ep_door1 = False
+        self.ep_key2 = False
+        self.ep_door2 = False
+        # ----- TESTING -----
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -61,10 +72,38 @@ class MetricsWrapper(gym.Wrapper):
         state_key = str(obs)
         self.episode_states.add(state_key)
 
+        # ----- TESTING -----
+        self.ep_key1 = False
+        self.ep_door1 = False
+        self.ep_key2 = False
+        self.ep_door2 = False
+        # ----- TESTING -----
+
         return obs, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+
+         # ----- TESTING -----
+        grid = self.unwrapped.grid
+        if (self.unwrapped.carrying is not None and self.unwrapped.carrying.color == self.unwrapped.key1_colour):
+            self.ep_key1 = True
+        
+        door1 = grid.get(self.unwrapped.wall1, self.unwrapped.door1_pos)
+
+        if door1 is not None and door1.is_open:
+            self.ep_door1 = True
+
+        if (self.unwrapped.carrying is not None and self.unwrapped.carrying.color == self.unwrapped.key2_colour):
+            self.ep_key2 = True
+        
+        door2 = grid.get(self.unwrapped.wall2, self.unwrapped.door2_pos)
+
+        if door2 is not None and door2.is_open:
+            self.ep_door2 = True
+
+        # ----- TESTING -----
+
         x, y = self.unwrapped.agent_pos
         self.episode_trajectory.append((x, y))
         self.visit_heatmap[y, x] += 1
@@ -94,12 +133,23 @@ class MetricsWrapper(gym.Wrapper):
                 "state_coverage": len(self.episode_states),
                 "extrinsic_return": self.episode_extrinsic_return,
             })
+            if self.ep_key1:
+                self.key1_reached += 1
+
+            if self.ep_door1:
+                self.door1_opened += 1
+
+            if self.ep_key2:
+                self.key2_reached += 1
+
+            if self.ep_door2:
+                self.door2_opened += 1
 
         return obs, total_reward, terminated, truncated, info
 
 
 def make_env():
-    env = MiniGrid(render_mode=None)
+    env = MiniGrid(size=16, max_steps=500, render_mode=None)
 
     env = FilterObservation(env, ["image", "direction"])
     env = FlattenObservation(env)
@@ -123,7 +173,7 @@ model = PPO(
 
 callback = MetricsCallback()
 
-model.learn(total_timesteps=5000, callback=callback)
+model.learn(total_timesteps=50000, callback=callback)
 file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
 save_dir = os.path.join("results", file_name)
@@ -148,6 +198,15 @@ else:
 
 
 env = vec_env.envs[0]
+episodes = len(successes)
+
+if episodes > 0:
+    print("Picked up key1:", 100 * env.key1_reached / episodes, "%")
+    print("Opened door1:", 100 * env.door1_opened / episodes, "%")
+    print("Picked up key2:", 100 * env.key2_reached / episodes, "%")
+    print("Opened door2:", 100 * env.door2_opened / episodes, "%")
+else:
+    print("No episodes completed.")
 
 trajectory = env.all_trajectories[-1]
 
