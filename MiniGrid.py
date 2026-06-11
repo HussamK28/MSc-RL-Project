@@ -1,7 +1,7 @@
 import random
 import time
 from minigrid.core.grid import Grid
-from minigrid.core.world_object import Door, Key, Goal, Wall, Lava
+from minigrid.core.world_object import Door, Key, Goal, Wall, Ball
 from minigrid.minigrid_env import MiniGridEnv
 from minigrid.core.mission import MissionSpace
 
@@ -17,7 +17,7 @@ class MiniGrid(MiniGridEnv):
             height=size,
             max_steps=max_steps,
             see_through_walls=False,
-            agent_view_size=3,
+            agent_view_size=7,
             **kwargs
         )
     
@@ -69,19 +69,19 @@ class MiniGrid(MiniGridEnv):
 
         self.place_agent(top=(1,1), size=(wall1-1, height-2))
 
-        self.npc_pos = random_npc_pos()
+        self.npc_pos = self.random_npc_pos()
 
 
-        def random_npc_pos(self):
-            npc = Lava()
-            npc_x = random.randint(1, self.width-2)
-            npc_y = random.randint(1, self.width-2)
+    def random_npc_pos(self):
+        while True:
+            npc_x = random.randint(1, self.width - 2)
+            npc_y = random.randint(1, self.height - 2)
 
             if self.grid.get(npc_x, npc_y) is None and (npc_x, npc_y) != tuple(self.agent_pos):
-                self.grid.set(npc_x, npc_y, npc)
-                return(npc_x, npc_y)
+                self.grid.set(npc_x, npc_y, Ball("purple"))
+                return (npc_x, npc_y)
 
-    
+        
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
 
@@ -92,7 +92,7 @@ class MiniGrid(MiniGridEnv):
             y = random.randint(1, self.height - 2)
 
             if self.grid.get(x, y) is None and (x, y) != tuple(self.agent_pos):
-                self.grid.set(x, y, Lava())
+                self.grid.set(x, y, Ball("purple"))
                 self.npc_pos = (x, y)
                 break
 
