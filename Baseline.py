@@ -167,7 +167,7 @@ model = PPO(
 
 callback = MetricsCallback()
 
-model.learn(total_timesteps=50000, callback=callback)
+model.learn(total_timesteps=500000, callback=callback)
 file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
 save_dir = os.path.join("results", file_name)

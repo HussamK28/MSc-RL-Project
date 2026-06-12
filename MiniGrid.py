@@ -6,7 +6,7 @@ from minigrid.minigrid_env import MiniGridEnv
 from minigrid.core.mission import MissionSpace
 
 class MiniGrid(MiniGridEnv):
-    def __init__(self, size=24, max_steps=800, **kwargs):
+    def __init__(self, size=20, max_steps=500, **kwargs):
         instructions = MissionSpace(
             mission_func=lambda: "You need to find the key before getting to the goal square."
         )
@@ -80,8 +80,7 @@ class MiniGrid(MiniGridEnv):
             if self.grid.get(npc_x, npc_y) is None and (npc_x, npc_y) != tuple(self.agent_pos):
                 self.grid.set(npc_x, npc_y, Ball("purple"))
                 return (npc_x, npc_y)
-
-        
+  
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
 
