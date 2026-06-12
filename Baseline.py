@@ -6,10 +6,6 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
