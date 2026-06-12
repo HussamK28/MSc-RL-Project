@@ -32,8 +32,6 @@ class MetricsCallback(BaseCallback):
 class MetricsWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
-        self.visit_counts = {}
-        self.intrinsic_reward_scale = 0.1
         self.episode_trajectory = []
         self.all_trajectories = []
         self.visit_heatmap = np.zeros((env.unwrapped.height, env.unwrapped.width))
@@ -109,13 +107,9 @@ class MetricsWrapper(gym.Wrapper):
         self.visit_heatmap[y, x] += 1
 
         state_key = str(obs)
-        self.visit_counts[state_key] = self.visit_counts.get(state_key, 0) + 1
-        intrinsic_reward = self.intrinsic_reward_scale / np.sqrt(self.visit_counts[state_key])
-        info["intrinsic_reward"] = intrinsic_reward
 
-        total_reward = reward + intrinsic_reward
-        self.episode_return += total_reward
-        self.episode_intrinsic_reward += intrinsic_reward
+        self.episode_return += reward
+        self.episode_intrinsic_reward += 0
         self.episode_extrinsic_return += reward
         self.episode_states.add(str(obs))
 
@@ -145,7 +139,7 @@ class MetricsWrapper(gym.Wrapper):
             if self.ep_door2:
                 self.door2_opened += 1
 
-        return obs, total_reward, terminated, truncated, info
+        return obs, reward, terminated, truncated, info
 
 
 def make_env():
