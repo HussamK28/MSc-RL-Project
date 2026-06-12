@@ -69,33 +69,7 @@ class MiniGrid(MiniGridEnv):
 
         self.place_agent(top=(1,1), size=(wall1-1, height-2))
 
-        self.npc_pos = self.random_npc_pos()
 
-
-    def random_npc_pos(self):
-        while True:
-            npc_x = random.randint(1, self.width - 2)
-            npc_y = random.randint(1, self.height - 2)
-
-            if self.grid.get(npc_x, npc_y) is None and (npc_x, npc_y) != tuple(self.agent_pos):
-                self.grid.set(npc_x, npc_y, Ball("purple"))
-                return (npc_x, npc_y)
-  
-    def step(self, action):
-        obs, reward, terminated, truncated, info = super().step(action)
-
-        old_npc_x, old_npc_y = self.npc_pos
-        self.grid.set(old_npc_x, old_npc_y, None)
-        while True:
-            x = random.randint(1, self.width - 2)
-            y = random.randint(1, self.height - 2)
-
-            if self.grid.get(x, y) is None and (x, y) != tuple(self.agent_pos):
-                self.grid.set(x, y, Ball("purple"))
-                self.npc_pos = (x, y)
-                break
-
-        return obs, reward, terminated, truncated, info
 
 
 if __name__ == "__main__":
