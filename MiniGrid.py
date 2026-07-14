@@ -6,7 +6,15 @@ from minigrid.minigrid_env import MiniGridEnv
 from minigrid.core.mission import MissionSpace
 
 class MiniGrid(MiniGridEnv):
-    def __init__(self, size=20, max_steps=500, **kwargs):
+    def __init__(self, size=20, max_steps=500, switch_after_eps = 50, **kwargs):
+        self.episode_count = 0,
+        self.switch_after_episodes = switch_after_eps,
+        self.num_balls = 10
+        self.ball_positions_a = []
+        self.ball_positions_b = []
+
+
+
         instructions = MissionSpace(
             mission_func=lambda: "You need to find the key before getting to the goal square."
         )
