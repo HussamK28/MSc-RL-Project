@@ -227,7 +227,7 @@ def mean_last(values, window=100):
     window = min(window, len(values))
     return float(np.mean(values[-window:]))
 
-model.learn(total_timesteps=50_000, callback=callback)
+model.learn(total_timesteps=500_000, callback=callback)
 file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
 save_dir = os.path.join("results", file_name)
