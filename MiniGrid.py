@@ -60,18 +60,30 @@ class MiniGrid(MiniGridEnv):
 
         door2 = Door(key2_colour, is_open=False, is_locked=True)
         self.grid.set(wall2, door2_pos, door2)
+
         
+        
+        if self.fixed_layout:
+            key1_x = 2
+            key1_y = height // 2
 
-        key1_x = self.np_random.integers(1, wall1)
-        key1_y = self.np_random.integers(1, height-1)
+            key2_x = wall1 + 2
+            key2_y = height // 2
+
+            goal_x = wall2 + 2
+            goal_y = height // 2
+        else:
+            key1_x = int(self.np_random.integers(1, wall1))
+            key1_y = int(self.np_random.integers(1, height-1))
+
+            key2_x = int(self.np_random.integers(wall1+1, wall2))
+            key2_y = int(self.np_random.integers(1, height-1))
+
+            goal_x = int(self.np_random.integers(wall2 + 1, width - 1))
+            goal_y = int(self.np_random.integers(1, height - 1))
+
         self.grid.set(key1_x, key1_y, Key(key1_colour))
-
-        key2_x = self.np_random.integers(wall1+1, wall2)
-        key2_y = self.np_random.integers(1, height-1)
         self.grid.set(key2_x, key2_y, Key(key2_colour))
-
-        goal_x = self.np_random.integers(wall2 + 1, width - 1)
-        goal_y = self.np_random.integers(1, height - 1)
         self.grid.set(goal_x, goal_y, Goal())
 
         self.wall1 = wall1
@@ -83,7 +95,12 @@ class MiniGrid(MiniGridEnv):
         self.key1_colour = key1_colour
         self.key2_colour = key2_colour
 
-        self.place_agent(top=(1,1), size=(wall1-1, height-2))
+        if self.fixed_layout:
+            self.agent_pos = (1,1)
+            self.agent_dir = 0
+        else:
+            self.place_agent(top=(1,1), size=(wall1 - 1, height - 2))
+
         self.ball_positions_a = []
         self.ball_positions_b = []
 
@@ -147,6 +164,7 @@ class MiniGrid(MiniGridEnv):
         )
         if door_unlock_success:
             self.carrying = None
+            obs = self.gen_obs()
 
         return obs, reward, terminated, truncated, info
 
