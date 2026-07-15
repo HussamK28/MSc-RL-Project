@@ -6,10 +6,11 @@ from minigrid.minigrid_env import MiniGridEnv
 from minigrid.core.mission import MissionSpace
 
 class MiniGrid(MiniGridEnv):
-    def __init__(self, size=20, max_steps=500, switch_after_eps = 50, **kwargs):
-        self.episode_count = 0,
-        self.switch_after_episodes = switch_after_eps,
-        self.num_balls = 10
+    def __init__(self, size=16, max_steps=500, noisy_tv=False, num_balls=10, fixed_layout=False, **kwargs):
+        self.noisy_tv = noisy_tv
+        self.num_balls = num_balls
+        self.fixed_layout = fixed_layout
+        self.episode_count = 0
         self.ball_positions_a = []
         self.ball_positions_b = []
 
@@ -40,30 +41,37 @@ class MiniGrid(MiniGridEnv):
             self.grid.set(wall2, y_pos, Wall())
 
         colours = ["red", "blue", "green", "yellow"]
-        key1_colour = random.choice(colours)
-        key2_colour = random.choice([c for c in colours if c != key1_colour])
+        key1_colour = self.np_random.choice(colours)
+        remaining_colours = [c for c in colours if c != key1_colour]
+        key2_colour = self.np_random.choice(remaining_colours)
 
         self.mission =(f"To reach the goal, you must first have the {key1_colour} key to unlock door 1!"
         f"You then need to get the {key2_colour} key to unlock door 2 and reach the end goal!")
 
-        door1_pos = random.randint(2, height-3)
+        if self.fixed_layout:
+            door1_pos = height // 3
+            door2_pos = (2 * height) // 3
+        else:
+            door1_pos = self.np_random.integers(2, height-2)
+            door2_pos = self.np_random.integers(2, height-2)
+
         door1 = Door(key1_colour, is_open=False, is_locked=True)
         self.grid.set(wall1, door1_pos, door1)
 
-        door2_pos = random.randint(2, height-3)
         door2 = Door(key2_colour, is_open=False, is_locked=True)
         self.grid.set(wall2, door2_pos, door2)
+        
 
-        key1_x = random.randint(1, wall1-1)
-        key1_y = random.randint(1, height-2)
+        key1_x = self.np_random.integers(1, wall1)
+        key1_y = self.np_random.integers(1, height-1)
         self.grid.set(key1_x, key1_y, Key(key1_colour))
 
-        key2_x = random.randint(wall1+1, wall2-1)
-        key2_y = random.randint(1, height-2)
+        key2_x = self.np_random.integers(wall1+1, wall2)
+        key2_y = self.np_random.integers(1, height-1)
         self.grid.set(key2_x, key2_y, Key(key2_colour))
 
-        goal_x = random.randint(wall2 + 1, width - 2)
-        goal_y = random.randint(1, height - 2)
+        goal_x = self.np_random.integers(wall2 + 1, width - 1)
+        goal_y = self.np_random.integers(1, height - 1)
         self.grid.set(goal_x, goal_y, Goal())
 
         self.wall1 = wall1
@@ -76,12 +84,64 @@ class MiniGrid(MiniGridEnv):
         self.key2_colour = key2_colour
 
         self.place_agent(top=(1,1), size=(wall1-1, height-2))
+        self.ball_positions_a = []
+        self.ball_positions_b = []
+
+        if self.noisy_tv:
+            self.ball_positions_a = []
+            self.ball_positions_b = []
+
+            reserved = set()
+
+            for _ in range(self.num_balls):
+                position_a = self.get_empty_position(reserved)
+                reserved.add(position_a)
+
+                position_b = self.get_empty_position(reserved)
+                reserved.add(position_b)
+
+                self.ball_positions_a.append(position_a)
+                self.ball_positions_b.append(position_b)
+
+            self.place_noisy_tv()
+
+
+    def get_empty_position(self, reserved=None):
+        if reserved is None:
+            reserved = set()
+
+        while True:
+            x = self.np_random.integers(1, self.width - 1)
+            y = self.np_random.integers(1, self.height - 1)
+            position = (x, y)
+
+            if (
+                self.grid.get(x, y) is None
+                and position != tuple(self.agent_pos)
+                and position not in reserved
+            ):
+                return position
+
+
+    def place_noisy_tv(self):
+        for pos_a, pos_b in zip(self.ball_positions_a, self.ball_positions_b):
+            if self.np_random.random() < 0.5:
+                x, y = pos_a
+            else:
+                x, y = pos_b
+
+            self.grid.set(x, y, Ball("purple"))
+
+    def reset(self, **kwargs):
+        obs, info = super().reset(**kwargs)
+        self.episode_count += 1
+        return obs, info
 
 
 
 
 if __name__ == "__main__":
-    env = MiniGrid(render_mode="human")
+    env = MiniGrid(size=16, max_steps=500, noisy_tv=False, fixed_layout=True, render_mode=None)
     num_tests = 10
 
     for episode in range(num_tests):
