@@ -21,7 +21,7 @@ from gymnasium.wrappers import FilterObservation, FlattenObservation
 class MetricsCallback(BaseCallback):
     def __init__(self):
         super().__init__()
-        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": []}
+        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": [], "key1": [], "door1": [], "key2": [], "door2": [], "door1_with_key": []}
 
     def _on_step(self):
         env = self.training_env.envs[0]
@@ -83,7 +83,7 @@ class MetricsWrapper(gym.Wrapper):
         self.icm_optimiser = icm_optimiser
         self.device = device
         self.previous_observations = None
-        self.intrinsic_reward_scale = 0.01
+        self.intrinsic_reward_scale = 0.03
         self.episode_trajectory = []
         self.all_trajectories = []
         self.visit_heatmap = np.zeros((env.unwrapped.height, env.unwrapped.width))
@@ -101,6 +101,7 @@ class MetricsWrapper(gym.Wrapper):
         self.door1_opened = 0
         self.key2_reached = 0
         self.door2_opened = 0
+        self.door1_reached_with_key = 0
 
         self.reset_episode_metrics()
 
@@ -115,6 +116,7 @@ class MetricsWrapper(gym.Wrapper):
         self.ep_door1 = False
         self.ep_key2 = False
         self.ep_door2 = False
+        self.ep_door1_reached_with_key = False
 
 
     def reset(self, **kwargs):
@@ -155,6 +157,12 @@ class MetricsWrapper(gym.Wrapper):
         door2 = grid.get(self.unwrapped.wall2, self.unwrapped.door2_pos)
         if door2 is not None and door2.is_open:
             self.ep_door2 = True
+        
+        agent_x, agent_y = self.unwrapped.agent_pos
+        door1_distance = (abs(int(agent_x) - int(self.unwrapped.wall1)) + abs(int(agent_y) - int(self.unwrapped.door1_pos)))
+        carrying_key1 = (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour)
+        if carrying_key1 and door1_distance == 1:
+            self.ep_door1_reached_with_key = True
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
@@ -194,6 +202,7 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_extrinsic_return += reward
         self.episode_states.add(self.state_key())
 
+
         if reward > 0:
             self.episode_success = 1
 
@@ -207,11 +216,17 @@ class MetricsWrapper(gym.Wrapper):
                 "intrinsic_reward": self.episode_intrinsic_reward,
                 "state_coverage": len(self.episode_states),
                 "extrinsic_return": self.episode_extrinsic_return,
+                "key1": int(self.ep_key1),
+                "door1": int(self.ep_door1),
+                "key2": int(self.ep_key2),
+                "door2": int(self.ep_door2),
+                "door1_with_key": int(self.ep_door1_reached_with_key)
             })
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
             self.key2_reached += int(self.ep_key2)
             self.door2_opened += int(self.ep_door2)
+            self.door1_reached_with_key += int(self.ep_door1_reached_with_key)
     
 
 
@@ -274,8 +289,14 @@ model = PPO(
 )
 
 callback = MetricsCallback()
+def mean_last(values, window=100):
+    if len(values) == 0:
+        return 0.0
 
-model.learn(total_timesteps=500000, callback=callback)
+    window = min(window, len(values))
+    return float(np.mean(values[-window:]))
+
+model.learn(total_timesteps=5000, callback=callback)
 file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
 save_dir = os.path.join("results", file_name)
@@ -295,6 +316,12 @@ print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"])
 print("Action dim:", action_dim)
 print("Intrinsic reward:", intrinsic_rewards)
 
+print("*******************")
+print("Success rate over last 100 episodes: ", mean_last(successes, 100) * 100, "%")
+print("Average coverage over last 100 episodes: ", mean_last(coverages, 100))
+print("Average extrinsic return over last 100 episodes: ", mean_last(callback.history["extrinsic_return"], 100))
+print("*******************")
+
 if 1 in successes:
     print("Time to first success:", successes.index(1) + 1, "episodes")
 else:
@@ -309,8 +336,23 @@ if episodes > 0:
     print("Opened door1:", 100 * env.door1_opened / episodes, "%")
     print("Picked up key2:", 100 * env.key2_reached / episodes, "%")
     print("Opened door2:", 100 * env.door2_opened / episodes, "%")
+    print("Reached door1 with key1: ", 100 * env.door1_reached_with_key / episodes, "%")
 else:
     print("No episodes completed.")
+
+def rolling_mean(values, window=100):
+    values = np.asarray(values, dtype=np.float32)
+
+    if len(values) < window:
+        return np.array([])
+
+    kernel = np.ones(window) / window
+
+    return np.convolve(
+        values,
+        kernel,
+        mode="valid"
+    )
 
 trajectory = env.all_trajectories[-1]
 
