@@ -131,6 +131,24 @@ class MiniGrid(MiniGridEnv):
                 x, y = pos_b
 
             self.grid.set(x, y, Ball("purple"))
+    
+    def step(self, action):
+        carried_before = self.carrying
+        front_position = tuple(self.front_pos)
+        front_obj = self.grid.get(*front_position)
+        obs, reward, terminated, truncated, info = super().step(action)
+
+        door_unlock_success = (
+            action == self.actions.toggle
+            and isinstance(front_obj, Door)
+            and isinstance(carried_before, Key)
+            and carried_before.color == front_obj.color
+            and front_obj.is_open
+        )
+        if door_unlock_success:
+            self.carrying = None
+
+        return obs, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
         obs, info = super().reset(**kwargs)
