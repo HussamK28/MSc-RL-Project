@@ -21,7 +21,7 @@ from gymnasium.wrappers import FilterObservation, FlattenObservation
 class MetricsCallback(BaseCallback):
     def __init__(self):
         super().__init__()
-        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": [], "key1": [], "door1": [], "key2": [], "door2": [], "door1_with_key": []}
+        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": [], "key1": [], "door1": [], "key2": [], "door2": [], "door1_with_key": [], "mean_intrinsic_per_step":[]}
 
     def _on_step(self):
         env = self.training_env.envs[0]
@@ -74,7 +74,7 @@ class ICM(nn.Module):
         beta = 0.2
         icm_loss = ((1.0 - beta) * inverse_loss + beta * forward_loss)
 
-        return forward_error.detach(), icm_loss
+        return (forward_error.detach(), icm_loss, forward_loss.detach(), inverse_loss.detach())
 
 class MetricsWrapper(gym.Wrapper):
     def __init__(self, env, icm, icm_optimiser, device):
@@ -110,6 +110,7 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_intrinsic_reward = 0
         self.episode_success = 0
         self.episode_extrinsic_return = 0
+        self.episode_steps = 0
         self.episode_states = set()
 
         self.ep_key1 = False
@@ -178,7 +179,7 @@ class MetricsWrapper(gym.Wrapper):
         next_observation_tensor = torch.tensor(normalised_next_obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         action_tensor = torch.tensor([action], dtype=torch.long, device=self.device)
 
-        intrinsic_reward_tensor, icm_loss = self.icm(
+        (intrinsic_reward_tensor, icm_loss, forward_loss, inverse_loss) = self.icm(
             observation_tensor,
             next_observation_tensor,
             action_tensor
@@ -196,10 +197,13 @@ class MetricsWrapper(gym.Wrapper):
         total_reward = float(reward) + intrinsic_reward
         info["intrinsic_reward"] = intrinsic_reward
         info["raw_intrinsic_reward"] = raw_intrinsic_reward
+        info["icm_forward_loss"] = float(forward_loss.item())
+        info["icm_inverse_loss"] = float(inverse_loss.item())
 
         self.episode_return += total_reward
         self.episode_intrinsic_reward += intrinsic_reward
         self.episode_extrinsic_return += reward
+        self.episode_steps += 1
         self.episode_states.add(self.state_key())
 
 
@@ -220,7 +224,8 @@ class MetricsWrapper(gym.Wrapper):
                 "door1": int(self.ep_door1),
                 "key2": int(self.ep_key2),
                 "door2": int(self.ep_door2),
-                "door1_with_key": int(self.ep_door1_reached_with_key)
+                "door1_with_key": int(self.ep_door1_reached_with_key),
+                "mean_intrinsic_per_step": (self.episode_intrinsic_reward / self.episode_steps if self.episode_steps > 0 else 0.0),
             })
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
@@ -296,7 +301,7 @@ def mean_last(values, window=100):
     window = min(window, len(values))
     return float(np.mean(values[-window:]))
 
-model.learn(total_timesteps=5000, callback=callback)
+model.learn(total_timesteps=50_000, callback=callback)
 file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
 save_dir = os.path.join("results", file_name)
