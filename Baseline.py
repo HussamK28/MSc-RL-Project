@@ -17,7 +17,7 @@ from gymnasium.wrappers import FilterObservation, FlattenObservation
 class MetricsCallback(BaseCallback):
     def __init__(self):
         super().__init__()
-        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": []}
+        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": [], "key1": [], "door1": [], "key2": [], "door2": [], "door1_with_key": []}
 
     def _on_step(self):
         env = self.training_env.envs[0]
@@ -28,6 +28,7 @@ class MetricsCallback(BaseCallback):
                 self.history[k].append(ep[k])
 
         return True
+
 
 class MetricsWrapper(gym.Wrapper):
     def __init__(self, env):
@@ -44,17 +45,19 @@ class MetricsWrapper(gym.Wrapper):
 
         self.completed_episodes = []
         self.use_subgoal_rewards = False
-        # ----- TESTING -----
+
         self.key1_reached = 0
         self.door1_opened = 0
         self.key2_reached = 0
         self.door2_opened = 0
+        self.door1_reached_with_key = 0
 
         self.ep_key1 = False
         self.ep_door1 = False
         self.ep_key2 = False
         self.ep_door2 = False
-        # ----- TESTING -----
+        self.ep_door1_reached_with_key = False
+
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -68,6 +71,7 @@ class MetricsWrapper(gym.Wrapper):
         self.ep_door1 = False
         self.ep_key2 = False
         self.ep_door2 = False
+        self.ep_door1_reached_with_key = False
         x, y = self.unwrapped.agent_pos
         self.episode_trajectory = [(x, y)]
         self.visit_heatmap[y, x] += 1
@@ -123,6 +127,11 @@ class MetricsWrapper(gym.Wrapper):
                 "intrinsic_reward": self.episode_intrinsic_reward,
                 "state_coverage": len(self.episode_states),
                 "extrinsic_return": self.episode_extrinsic_return,
+                "key1": int(self.ep_key1),
+                "door1": int(self.ep_door1),
+                "key2": int(self.ep_key2),
+                "door2": int(self.ep_door2),
+                "door1_with_key": int(self.ep_door1_reached_with_key)
             })
             if self.ep_key1:
                 self.key1_reached += 1
@@ -135,6 +144,8 @@ class MetricsWrapper(gym.Wrapper):
 
             if self.ep_door2:
                 self.door2_opened += 1
+
+            self.door1_reached_with_key += int(self.ep_door1_reached_with_key)
 
         return obs, training_reward, terminated, truncated, info
 
@@ -164,6 +175,12 @@ class MetricsWrapper(gym.Wrapper):
         door2 = grid.get(self.unwrapped.wall2, self.unwrapped.door2_pos)
         if door2 is not None and door2.is_open:
             self.ep_door2 = True
+        
+        agent_x, agent_y = self.unwrapped.agent_pos
+        door1_distance = (abs(int(agent_x) - int(self.unwrapped.wall1)) + abs(int(agent_y) - int(self.unwrapped.door1_pos)))
+        carrying_key1 = (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour)
+        if carrying_key1 and door1_distance == 1:
+            self.ep_door1_reached_with_key = True
 
 def make_env():
     env = MiniGrid(size=12, max_steps=400, noisy_tv=False, fixed_layout=True, render_mode=None)
@@ -203,7 +220,14 @@ model = PPO(
 
 callback = MetricsCallback()
 
-model.learn(total_timesteps=500000, callback=callback)
+def mean_last(values, window=100):
+    if len(values) == 0:
+        return 0.0
+
+    window = min(window, len(values))
+    return float(np.mean(values[-window:]))
+
+model.learn(total_timesteps=5000, callback=callback)
 file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
 save_dir = os.path.join("results", file_name)
@@ -220,6 +244,11 @@ print("Success rate:", np.mean(successes) * 100, "%")
 print("Average intrinsic reward:", np.mean(intrinsic_rewards))
 print("Average state coverage:", np.mean(coverages))
 print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"]))
+print("*******************")
+print("Success rate over last 100 episodes: ", mean_last(successes, 100) * 100, "%")
+print("Average coverage over last 100 episodes: ", mean_last(coverages, 100))
+print("Average extrinsic return over last 100 episodes: ", mean_last(callback.history["extrinsic_return"], 100))
+print("*******************")
 
 if 1 in successes:
     print("Time to first success:", successes.index(1) + 1, "episodes")
@@ -235,10 +264,24 @@ if episodes > 0:
     print("Opened door1:", 100 * env.door1_opened / episodes, "%")
     print("Picked up key2:", 100 * env.key2_reached / episodes, "%")
     print("Opened door2:", 100 * env.door2_opened / episodes, "%")
+    print("Reached door1 with key1: ", 100 * env.door1_reached_with_key / episodes, "%")
 else:
     print("No episodes completed.")
 
 trajectory = env.all_trajectories[-1]
+def rolling_mean(values, window=100):
+    values = np.asarray(values, dtype=np.float32)
+
+    if len(values) < window:
+        return np.array([])
+
+    kernel = np.ones(window) / window
+
+    return np.convolve(
+        values,
+        kernel,
+        mode="valid"
+    )
 
 xs = [p[0] for p in trajectory]
 ys = [p[1] for p in trajectory]
