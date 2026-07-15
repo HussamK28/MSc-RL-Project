@@ -43,6 +43,7 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_states = set()
 
         self.completed_episodes = []
+        self.use_subgoal_rewards = False
         # ----- TESTING -----
         self.key1_reached = 0
         self.door1_opened = 0
@@ -57,61 +58,57 @@ class MetricsWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        x, y = self.unwrapped.agent_pos
-        self.episode_trajectory = [(x, y)]
-        self.visit_heatmap[y, x] += 1
-
         self.episode_return = 0
         self.episode_intrinsic_reward = 0
         self.episode_success = 0
         self.episode_extrinsic_return = 0
         self.episode_states = set()
 
-        state_key = str(obs)
-        self.episode_states.add(state_key)
-
-        # ----- TESTING -----
         self.ep_key1 = False
         self.ep_door1 = False
         self.ep_key2 = False
         self.ep_door2 = False
-        # ----- TESTING -----
+        x, y = self.unwrapped.agent_pos
+        self.episode_trajectory = [(x, y)]
+        self.visit_heatmap[y, x] += 1
+        self.episode_states.add(self.state_key())
 
         return obs, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        had_key1 = self.ep_key1
+        had_door1 = self.ep_door1
+        had_key2 = self.ep_key2
+        had_door2 = self.ep_door2
 
-         # ----- TESTING -----
-        grid = self.unwrapped.grid
-        if (self.unwrapped.carrying is not None and self.unwrapped.carrying.color == self.unwrapped.key1_colour):
-            self.ep_key1 = True
-        
-        door1 = grid.get(self.unwrapped.wall1, self.unwrapped.door1_pos)
+        self.update_subgoal_metrics()
 
-        if door1 is not None and door1.is_open:
-            self.ep_door1 = True
+        shaping_reward = 0.0
 
-        if (self.unwrapped.carrying is not None and self.unwrapped.carrying.color == self.unwrapped.key2_colour):
-            self.ep_key2 = True
-        
-        door2 = grid.get(self.unwrapped.wall2, self.unwrapped.door2_pos)
+        if self.use_subgoal_rewards:
+            if self.ep_key1 and not had_key1:
+                shaping_reward += 0.05
 
-        if door2 is not None and door2.is_open:
-            self.ep_door2 = True
+            if self.ep_door1 and not had_door1:
+                shaping_reward += 0.10
 
-        # ----- TESTING -----
+            if self.ep_key2 and not had_key2:
+                shaping_reward += 0.15
 
+            if self.ep_door2 and not had_door2:
+                shaping_reward += 0.20
+
+        training_reward = float(reward) + shaping_reward
         x, y = self.unwrapped.agent_pos
         self.episode_trajectory.append((x, y))
         self.visit_heatmap[y, x] += 1
 
-        state_key = str(obs)
 
-        self.episode_return += reward
+        self.episode_return += training_reward
         self.episode_intrinsic_reward += 0
         self.episode_extrinsic_return += reward
-        self.episode_states.add(str(obs))
+        self.episode_states.add(self.state_key())
 
         if reward > 0:
             self.episode_success = 1
@@ -139,11 +136,37 @@ class MetricsWrapper(gym.Wrapper):
             if self.ep_door2:
                 self.door2_opened += 1
 
-        return obs, reward, terminated, truncated, info
+        return obs, training_reward, terminated, truncated, info
 
+    def state_key(self):
+        x, y = self.unwrapped.agent_pos
+        carrying = self.unwrapped.carrying
+        carried_object = None
+
+        if carrying is not None:
+            carried_object = (carrying.type, carrying.color)
+        
+        return int(x), int(y), int(self.unwrapped.agent_dir), carried_object, bool(self.ep_door1), bool(self.ep_door2)
+    
+    def update_subgoal_metrics(self):
+        grid = self.unwrapped.grid
+        carrying = self.unwrapped.carrying
+        if (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour):
+            self.ep_key1 = True
+        
+        door1 = grid.get(self.unwrapped.wall1, self.unwrapped.door1_pos)
+        if door1 is not None and door1.is_open:
+            self.ep_door1 = True
+        
+        if (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key2_colour):
+            self.ep_key2 = True
+        
+        door2 = grid.get(self.unwrapped.wall2, self.unwrapped.door2_pos)
+        if door2 is not None and door2.is_open:
+            self.ep_door2 = True
 
 def make_env():
-    env = MiniGrid(size=16, max_steps=500, render_mode=None)
+    env = MiniGrid(size=12, max_steps=400, noisy_tv=False, fixed_layout=True, render_mode=None)
 
     env = FilterObservation(env, ["image", "direction"])
     env = FlattenObservation(env)
@@ -153,16 +176,29 @@ def make_env():
     return env
 
 vec_env = DummyVecEnv([make_env])
+vec_env.seed(42)
 
 model = PPO(
     "MlpPolicy",
     vec_env,
-    learning_rate=3e-4,
-    gamma=0.99,
-    n_steps=256,
-    batch_size=64,
-    ent_coef=0.01,
-    verbose=1
+    learning_rate=2.5e-4,
+    n_steps=1024,
+    batch_size=128,
+    n_epochs=10,
+    gamma=0.995,
+    gae_lambda=0.95,
+    clip_range=0.2,
+    ent_coef=0.02,
+    vf_coef=0.5,
+    max_grad_norm=0.5,
+    policy_kwargs={
+        "net_arch": {
+            "pi": [256, 256],
+            "vf": [256, 256]
+        }
+    },
+    verbose=1,
+    seed=42
 )
 
 callback = MetricsCallback()
