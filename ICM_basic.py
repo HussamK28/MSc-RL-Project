@@ -292,7 +292,6 @@ print("Success rate:", np.mean(successes) * 100, "%")
 print("Average intrinsic reward:", np.mean(intrinsic_rewards))
 print("Average state coverage:", np.mean(coverages))
 print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"]))
-print("Observation dim:", obs_dim)
 print("Action dim:", action_dim)
 print("Intrinsic reward:", intrinsic_rewards)
 
