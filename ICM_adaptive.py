@@ -83,7 +83,13 @@ class MetricsWrapper(gym.Wrapper):
         self.icm_optimiser = icm_optimiser
         self.device = device
         self.previous_observations = None
-        self.intrinsic_reward_scale = 0.03
+        self.intrinsic_reward_scale = 1.0
+
+        self.learning_progress_fast = 0.1
+        self.learning_progress_slow = 0.001
+        self.fast_pred_error = None
+        self.slow_pred_error = None
+
         self.episode_trajectory = []
         self.all_trajectories = []
         self.visit_heatmap = np.zeros((env.unwrapped.height, env.unwrapped.width))
@@ -104,6 +110,22 @@ class MetricsWrapper(gym.Wrapper):
         self.door1_reached_with_key = 0
 
         self.reset_episode_metrics()
+    
+    def calculate_learning_progress(self, prediction_error):
+        prediction_error = float(prediction_error)
+        if self.fast_pred_error is None:
+            self.fast_pred_error = prediction_error
+            self.slow_pred_error = prediction_error
+            return 0.0
+        
+        self.fast_pred_error = (self.learning_progress_fast * prediction_error + (1.0 - self.learning_progress_fast) * self.fast_pred_error)
+        self.slow_pred_error = (self.learning_progress_slow * prediction_error + (1.0 - self.learning_progress_slow) * self.slow_pred_error)
+
+        learning_progress = self.slow_pred_error - self.fast_pred_error
+        learning_progress = max(learning_progress, 0.0)
+
+        return float(np.clip(learning_progress,0.0, self.learning_progress_clip))
+
 
     def reset_episode_metrics(self):
         self.episode_return = 0
@@ -179,7 +201,7 @@ class MetricsWrapper(gym.Wrapper):
         next_observation_tensor = torch.tensor(normalised_next_obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         action_tensor = torch.tensor([action], dtype=torch.long, device=self.device)
 
-        (intrinsic_reward_tensor, icm_loss, forward_loss, inverse_loss) = self.icm(
+        (prediction_error_tensor, icm_loss, forward_loss, inverse_loss) = self.icm(
             observation_tensor,
             next_observation_tensor,
             action_tensor
@@ -190,11 +212,14 @@ class MetricsWrapper(gym.Wrapper):
         torch.nn.utils.clip_grad_norm_(self.icm.parameters(), max_norm=0.5)
         self.icm_optimiser.step()
 
-        raw_intrinsic_reward = intrinsic_reward_tensor.item()
+        prediction_error = float(prediction_error_tensor.item())
 
-        intrinsic_reward = raw_intrinsic_reward * self.intrinsic_reward_scale
+        learning_progress = self.calculate_learning_progress(prediction_error)
+        intrinsic_reward = learning_progress * self.intrinsic_reward_scale
         intrinsic_reward = float(np.clip(intrinsic_reward, 0.0, 0.1))
-        total_reward = float(reward) + intrinsic_reward
+        extrinsic_reward = float(reward)
+        total_reward = intrinsic_reward + extrinsic_reward
+
         info["intrinsic_reward"] = intrinsic_reward
         info["raw_intrinsic_reward"] = raw_intrinsic_reward
         info["icm_forward_loss"] = float(forward_loss.item())
