@@ -474,7 +474,7 @@ for seed in seeds:
     callback = MetricsCallback()
 
     model.learn(
-        total_timesteps=50_000,
+        total_timesteps=500_000,
         callback=callback
     )
 
@@ -544,7 +544,11 @@ for seed in seeds:
             if env.door1_faced_with_key > 0
             else 0.0
         ),
-            }
+        "key1_count": env.key1_reached,
+        "door1_reached_count": env.door1_reached_with_key,
+        "door1_faced_count": env.door1_faced_with_key,
+        "door1_opened_count": env.door1_opened,
+        }
 
     all_seed_results.append(seed_result)
     print("\n--------------------------------")
@@ -760,3 +764,65 @@ for metric in metrics_to_summarise:
         f"{np.mean(values):.4f} "
         f"± {np.std(values):.4f}"
     )
+
+    total_episodes = sum(
+    result["episodes"]
+    for result in all_seed_results
+)
+
+total_key1 = sum(
+    result["key1_count"]
+    for result in all_seed_results
+)
+
+total_door1_reached = sum(
+    result["door1_reached_count"]
+    for result in all_seed_results
+)
+
+total_door1_faced = sum(
+    result["door1_faced_count"]
+    for result in all_seed_results
+)
+
+total_door1_opened = sum(
+    result["door1_opened_count"]
+    for result in all_seed_results
+)
+
+print("\n==============================")
+print("POOLED EVENT COUNTS")
+print("==============================")
+
+print("Total episodes:", total_episodes)
+print("Key1 collected:", total_key1)
+print("Door1 reached with Key1:", total_door1_reached)
+print("Door1 faced with Key1:", total_door1_faced)
+print("Door1 opened:", total_door1_opened)
+
+print(
+    "P(reach Door1 | Key1):",
+    convert_to_percentage(
+        total_door1_reached,
+        total_key1
+    ),
+    "%"
+)
+
+print(
+    "P(face Door1 | reached):",
+    convert_to_percentage(
+        total_door1_faced,
+        total_door1_reached
+    ),
+    "%"
+)
+
+print(
+    "P(open Door1 | faced):",
+    convert_to_percentage(
+        total_door1_opened,
+        total_door1_faced
+    ),
+    "%"
+)
