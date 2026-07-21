@@ -9,6 +9,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import random
 
 import gymnasium as gym
 import numpy as np
@@ -37,6 +38,7 @@ class MetricsCallback(BaseCallback):
                         "mean_fast_pred_error":[],
                         "mean_slow_pred_error":[],
                         "positive_lp_fraction": [],
+                        "door1_faced_with_key": [],
                         }
 
     def _on_step(self):
@@ -125,6 +127,11 @@ class MetricsWrapper(gym.Wrapper):
         self.key2_reached = 0
         self.door2_opened = 0
         self.door1_reached_with_key = 0
+        self.door1_faced_with_key = 0
+
+        self.door_shaping_gamma = 0.995
+        self.door1_reward_scale = 0.0025
+        self.door1_completion_bonus = 0.05
 
         self.reset_episode_metrics()
     
@@ -158,6 +165,8 @@ class MetricsWrapper(gym.Wrapper):
         self.ep_key2 = False
         self.ep_door2 = False
         self.ep_door1_reached_with_key = False
+        self.previous_door1_distance = None
+        self.ep_door1_faced_with_key = False
 
         self.episode_prediction_errors = []
         self.episode_learning_progress = []
@@ -187,6 +196,17 @@ class MetricsWrapper(gym.Wrapper):
         
         return int(x), int(y), int(self.unwrapped.agent_dir), carried_object, bool(self.ep_door1), bool(self.ep_door2)
     
+    def check_if_carrying_key1(self):
+        carrying = self.unwrapped.carrying
+        return (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour)
+    
+    def distance_to_door1(self):
+        agent_x, agent_y = self.unwrapped.agent_pos
+        door_x = self.unwrapped.wall1
+        door_y = self.unwrapped.door1_pos
+
+        return (abs(int(agent_x) - int(door_x)) + abs(int(agent_y) - int(door_y)))
+
     def update_subgoal_metrics(self):
         grid = self.unwrapped.grid
         carrying = self.unwrapped.carrying
@@ -205,14 +225,26 @@ class MetricsWrapper(gym.Wrapper):
             self.ep_door2 = True
         
         agent_x, agent_y = self.unwrapped.agent_pos
+
         door1_distance = (abs(int(agent_x) - int(self.unwrapped.wall1)) + abs(int(agent_y) - int(self.unwrapped.door1_pos)))
+
         carrying_key1 = (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour)
+
         if carrying_key1 and door1_distance == 1:
             self.ep_door1_reached_with_key = True
 
+        front_x, front_y = self.unwrapped.front_pos
+
+        if (carrying_key1 and int(front_x) == int(self.unwrapped.wall1) and int(front_y) == int(self.unwrapped.door1_pos)):
+            self.ep_door1_faced_with_key = True
+
     def step(self, action):
+        door1_was_open = self.ep_door1
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.update_subgoal_metrics()
+
+        door1_just_opened = (not door1_was_open and self.ep_door1)
+        door1_completion_bonus = (self.door1_completion_bonus if door1_just_opened else 0.0)
 
         x, y = self.unwrapped.agent_pos
         self.episode_trajectory.append((int(x), int(y)))
@@ -239,6 +271,17 @@ class MetricsWrapper(gym.Wrapper):
         
         learning_progress = self.calculate_learning_progress(prediction_error)
         scaled_prediction_error = float(np.clip(prediction_error, 0.0, 0.1))
+
+        door1_progress_reward = 0.0
+        if self.check_if_carrying_key1():
+            current_distance = self.distance_to_door1()
+            if self.previous_door1_distance is not None:
+                previous_potential = -float(self.previous_door1_distance)
+                current_potential = -float(current_distance)
+                door1_progress_reward = (self.door_shaping_gamma * current_potential - previous_potential)
+            self.previous_door1_distance = current_distance
+        else:
+            self.previous_door1_distance = None
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
         prediction_error_weight = 0.2
         learning_progress_weight = 0.8
@@ -246,23 +289,28 @@ class MetricsWrapper(gym.Wrapper):
         hybrid_reward = (prediction_error_weight * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
 
         intrinsic_reward = hybrid_reward * self.intrinsic_reward_scale
-        intrinsic_reward = float(np.clip(intrinsic_reward, 0.0, 0.1))
+        scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
+        total_intrinsic_reward = (intrinsic_reward + scaled_door1_reward + door1_completion_bonus)
+        total_intrinsic_reward = float(np.clip(total_intrinsic_reward, 0.0, 0.15))
         extrinsic_reward = float(reward)
-        total_reward = intrinsic_reward + extrinsic_reward
+        total_reward = total_intrinsic_reward + extrinsic_reward
 
-        info["intrinsic_reward"] = intrinsic_reward
+        info["intrinsic_reward"] = total_intrinsic_reward
+        info["hybrid_reward"] = hybrid_reward
+        info["door1_progress_reward"] = door1_progress_reward
+        info["scaled_door1_reward"] = scaled_door1_reward
+        info["door1_completion_bonus"] = door1_completion_bonus
         info["prediction_error"] = prediction_error
         info["learning_progress"] = learning_progress
         info["scaled_prediction_error"] = scaled_prediction_error
         info["scaled_learning_progress"] = scaled_learning_progress
-        info["hybrid_intrinsic_reward"] = intrinsic_reward
         info["fast_pred_error"] = float(self.fast_pred_error)
         info["slow_pred_error"] = float(self.slow_pred_error)
         info["icm_forward_loss"] = float(forward_loss.item())
         info["icm_inverse_loss"] = float(inverse_loss.item())
 
         self.episode_return += total_reward
-        self.episode_intrinsic_reward += intrinsic_reward
+        self.episode_intrinsic_reward += total_intrinsic_reward
         self.episode_extrinsic_return += extrinsic_reward
         self.episode_steps += 1
         if learning_progress > 0:
@@ -300,12 +348,14 @@ class MetricsWrapper(gym.Wrapper):
                 "mean_fast_pred_error": (float(np.mean(self.episode_fast_errors)) if self.episode_fast_errors else 0.0),
                 "mean_slow_pred_error": (float(np.mean(self.episode_slow_errors)) if self.episode_slow_errors else 0.0),
                 "positive_lp_fraction": (self.episode_positive_lp_steps / self.episode_steps if self.episode_steps > 0 else 0.0),
+                "door1_faced_with_key": int(self.ep_door1_faced_with_key),
             })
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
             self.key2_reached += int(self.ep_key2)
             self.door2_opened += int(self.ep_door2)
             self.door1_reached_with_key += int(self.ep_door1_reached_with_key)
+            self.door1_faced_with_key += int(self.ep_door1_faced_with_key)
     
 
 
@@ -331,220 +381,382 @@ action_dim = temp_env.action_space.n
 icm = ICM(obs_dim, action_dim).to(device)
 icm_optimiser = torch.optim.Adam(icm.parameters(), lr=1e-4)
 
-def make_env():
-    env = MiniGrid(size=12, max_steps=400, noisy_tv=False, fixed_layout=True, render_mode=None)
+def make_env(icm, icm_optimiser):
+    def _init():
+        env = MiniGrid(
+            size=12,
+            max_steps=400,
+            noisy_tv=False,
+            fixed_layout=True,
+            render_mode=None
+        )
 
-    env = FilterObservation(env, ["image", "direction"])
-    env = FlattenObservation(env)
+        env = FilterObservation(env,["image", "direction"])
 
-    env = MetricsWrapper(env, icm=icm, icm_optimiser=icm_optimiser, device=device)
+        env = FlattenObservation(env)
 
-    return env
+        env = MetricsWrapper(
+            env,
+            icm=icm,
+            icm_optimiser=icm_optimiser,
+            device=device
+        )
 
-vec_env = DummyVecEnv([make_env])
-vec_env.seed(42)
+        return env
 
-model = PPO(
-    "MlpPolicy",
-    vec_env,
-    learning_rate=2.5e-4,
-    n_steps=1024,
-    batch_size=128,
-    n_epochs=10,
-    gamma=0.995,
-    gae_lambda=0.95,
-    clip_range=0.2,
-    ent_coef=0.02,
-    vf_coef=0.5,
-    max_grad_norm=0.5,
-    policy_kwargs={
-        "net_arch": {
-            "pi": [256, 256],
-            "vf": [256, 256]
-        }
-    },
-    verbose=1,
-    seed=42
-)
+    return _init
+    
 
-callback = MetricsCallback()
 def mean_last(values, window=100):
     if len(values) == 0:
         return 0.0
 
     window = min(window, len(values))
     return float(np.mean(values[-window:]))
+seeds = [42, 123, 456]
 
-model.learn(total_timesteps=50_000, callback=callback)
-file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
+all_seed_results = []
 
-save_dir = os.path.join("results", file_name)
-os.makedirs(save_dir, exist_ok=True)
+def set_all_seeds(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
-returns = callback.history["return"]
-successes = callback.history["success"]
-intrinsic_rewards = callback.history["intrinsic_reward"]
-coverages = callback.history["state_coverage"]
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
-print("Episodes logged:", len(successes))
-print("Average return:", np.mean(returns))
-print("Success rate:", np.mean(successes) * 100, "%")
-print("Average intrinsic reward:", np.mean(intrinsic_rewards))
-print("Average state coverage:", np.mean(coverages))
-print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"]))
-print("Action dim:", action_dim)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
-print("*******************")
-print("Success rate over last 100 episodes: ", mean_last(successes, 100) * 100, "%")
-print("Average coverage over last 100 episodes: ", mean_last(coverages, 100))
-print("Average extrinsic return over last 100 episodes: ", mean_last(callback.history["extrinsic_return"], 100))
-print("*******************")
+for seed in seeds:
+    print(f"\nRunning seed: {seed}")
 
-if 1 in successes:
-    print("Time to first success:", successes.index(1) + 1, "episodes")
-else:
-    print("Time to first success: not achieved")
+    set_all_seeds(seed)
 
-def convert_to_percentage(top, bottom):
-    if bottom == 0:
-        return 0.0
-    else:
-        return 100 * top / bottom
+    icm = ICM(
+        obs_dim,
+        action_dim
+    ).to(device)
 
-env = vec_env.envs[0]
-episodes = len(successes)
+    icm_optimiser = torch.optim.Adam(
+        icm.parameters(),
+        lr=1e-4
+    )
+    vec_env = DummyVecEnv([make_env(icm,icm_optimiser)])
+    vec_env.seed(seed)
+    vec_env.reset()
+    
 
-if episodes > 0:
-    print("Picked up key1:", 100 * env.key1_reached / episodes, "%")
-    print("Opened door1:", 100 * env.door1_opened / episodes, "%")
-    print("Picked up key2:", 100 * env.key2_reached / episodes, "%")
-    print("Opened door2:", 100 * env.door2_opened / episodes, "%")
-    print("Reached door1 with key1: ", 100 * env.door1_reached_with_key / episodes, "%")
-    print("P(door1 | key1): ", convert_to_percentage(env.door1_opened, env.key1_reached), "%")
-    print("P(key2 | door1): ", convert_to_percentage(env.key2_reached, env.door1_opened), "%")
-    print("P(door2 | key2): ", convert_to_percentage(env.door2_opened, env.key2_reached), "%")
-    print("P(reach door1 with key1 | key1): ", convert_to_percentage(env.door1_reached_with_key, env.key1_reached), "%")
-    print("P(open door1 | reached door1 with key1): ", convert_to_percentage(env.door1_opened, env.door1_reached_with_key), "%")
-    print("Average positive LP fraction:",np.mean(callback.history["positive_lp_fraction"]))
-    print("Mean prediction error:",np.mean(callback.history["mean_prediction_error"]))
-    print("Maximum episode mean prediction error:",np.max(callback.history["mean_prediction_error"]))
-    print("Mean learning progress:",np.mean(callback.history["mean_learning_progress"]))
-    print("Maximum episode mean learning progress:",np.max(callback.history["mean_learning_progress"]))
-else:
-    print("No episodes completed.")
-
-
-
-def rolling_mean(values, window=100):
-    values = np.asarray(values, dtype=np.float32)
-
-    if len(values) < window:
-        return np.array([])
-
-    kernel = np.ones(window) / window
-
-    return np.convolve(
-        values,
-        kernel,
-        mode="valid"
+    model = PPO(
+        "MlpPolicy",
+        vec_env,
+        learning_rate=2.5e-4,
+        n_steps=1024,
+        batch_size=128,
+        n_epochs=10,
+        gamma=0.995,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.02,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        policy_kwargs={
+            "net_arch": {
+                "pi": [256, 256],
+                "vf": [256, 256]
+            }
+        },
+        verbose=1,
+        seed=seed
     )
 
-trajectory = env.all_trajectories[-1]
+    callback = MetricsCallback()
 
-xs = [p[0] for p in trajectory]
-ys = [p[1] for p in trajectory]
+    model.learn(
+        total_timesteps=50_000,
+        callback=callback
+    )
 
-plt.figure(figsize=(6, 6))
-plt.plot(xs, ys, marker="o")
-plt.gca().invert_yaxis()
-plt.title("Agent Trajectory")
-plt.xlabel("x position")
-plt.ylabel("y position")
-plt.grid(True)
-plt.savefig(
-    os.path.join(save_dir, "trajectory_graph.png"),
-    dpi=300,
-    bbox_inches="tight"
-)
-plt.show()
+    env = vec_env.envs[0]
+    episodes = len(callback.history["success"])
 
-plt.figure(figsize=(6, 6))
-plt.imshow(env.visit_heatmap)
-plt.colorbar(label="Visit count")
-plt.title("Visited State Heatmap")
-plt.xlabel("x position")
-plt.ylabel("y position")
-plt.savefig(
-    os.path.join(save_dir, "heatmap_chart.png"),
-    dpi=300,
-    bbox_inches="tight"
-)
-plt.show()
+    seed_result = {
+        "seed": seed,
+        "episodes": episodes,
+        "success_rate": (
+            np.mean(callback.history["success"])
+            if episodes > 0
+            else 0.0
+        ),
+        "coverage": (
+            np.mean(callback.history["state_coverage"])
+            if episodes > 0
+            else 0.0
+        ),
+        "last_100_coverage": mean_last(
+            callback.history["state_coverage"],
+            100
+        ),
+        "key1_rate": (
+            env.key1_reached / episodes
+            if episodes > 0
+            else 0.0
+        ),
+        "door1_rate": (
+            env.door1_opened / episodes
+            if episodes > 0
+            else 0.0
+        ),
+        "door1_with_key_rate": (
+            env.door1_reached_with_key / episodes
+            if episodes > 0
+            else 0.0
+        ),
+        "p_reach_door1_given_key1": (
+            env.door1_reached_with_key
+            / env.key1_reached
+            if env.key1_reached > 0
+            else 0.0
+        ),
+        "p_open_door1_given_reached": (
+            env.door1_opened
+            / env.door1_reached_with_key
+            if env.door1_reached_with_key > 0
+            else 0.0
+        ),
+        "door1_faced_with_key_rate": (
+            env.door1_faced_with_key / episodes
+            if episodes > 0
+            else 0.0
+        ),
 
-prediction_errors = callback.history["mean_prediction_error"]
-learning_progress_values = callback.history["mean_learning_progress"]
+        "p_face_door1_given_reached": (
+            env.door1_faced_with_key
+            / env.door1_reached_with_key
+            if env.door1_reached_with_key > 0
+            else 0.0
+        ),
 
-plt.figure(figsize=(6,6))
-plt.plot(
-    prediction_errors,
-    label="Mean prediction error"
-)
-plt.plot(
-    learning_progress_values,
-    label="Mean learning progress"
-)
-plt.xlabel("Episode")
-plt.ylabel("Value")
-plt.title("Prediction Error vs Learning Progress")
-plt.legend()
-plt.grid(True)
-plt.savefig(
-    os.path.join(
-        save_dir,
-        "prediction_error_vs_learning_progress.png"
-    ),
-    dpi=300,
-    bbox_inches="tight"
-)
-plt.show()
+        "p_open_door1_given_faced": (
+            env.door1_opened
+            / env.door1_faced_with_key
+            if env.door1_faced_with_key > 0
+            else 0.0
+        ),
+            }
 
-plt.figure(figsize=(6,6))
-plt.plot(
-    callback.history["mean_fast_pred_error"],
-    label="Fast error EMA"
-)
-plt.plot(
-    callback.history["mean_slow_pred_error"],
-    label="Slow error EMA"
-)
-plt.xlabel("Episode")
-plt.ylabel("Prediction error")
-plt.title("Fast and Slow Prediction-Error Averages")
-plt.legend()
-plt.grid(True)
-plt.savefig(
-    os.path.join(
-        save_dir,
-        "fast_vs_slow_error.png"
-    ),
-    dpi=300,
-    bbox_inches="tight"
-)
-plt.show()
+    all_seed_results.append(seed_result)
+    print("\n--------------------------------")
+    print(f"RESULTS FOR SEED {seed}")
+    print("--------------------------------")
 
-with open(os.path.join(save_dir, "run_trajectories.pkl"), "wb") as f:
-    pickle.dump(env.all_trajectories, f)
-np.save(os.path.join(save_dir, "visit_heatmap.npy"),env.visit_heatmap)
-metrics = {
-    "episodes_logged": len(successes),
-    "success_rate": np.mean(successes),
-    "avg_return": np.mean(returns),
-    "avg_intrinsic_reward": np.mean(intrinsic_rewards),
-    "avg_state_coverage": np.mean(coverages),
-    "avg_extrinsic_return": np.mean(callback.history["extrinsic_return"]),
-    "time_to_first_success":
-        successes.index(1) + 1 if 1 in successes else None
-}
+    file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
-with open(os.path.join(save_dir, "metrics.pkl"), "wb") as f:
-    pickle.dump(metrics, f)
+    save_dir = os.path.join("results", file_name)
+    os.makedirs(save_dir, exist_ok=True)
+
+    returns = callback.history["return"]
+    successes = callback.history["success"]
+    intrinsic_rewards = callback.history["intrinsic_reward"]
+    coverages = callback.history["state_coverage"]
+
+    print("Episodes logged:", len(successes))
+    print("Average return:", np.mean(returns))
+    print("Success rate:", np.mean(successes) * 100, "%")
+    print("Average intrinsic reward:", np.mean(intrinsic_rewards))
+    print("Average state coverage:", np.mean(coverages))
+    print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"]))
+    print("Action dim:", action_dim)
+
+    print("*******************")
+    print("Success rate over last 100 episodes: ", mean_last(successes, 100) * 100, "%")
+    print("Average coverage over last 100 episodes: ", mean_last(coverages, 100))
+    print("Average extrinsic return over last 100 episodes: ", mean_last(callback.history["extrinsic_return"], 100))
+    print("*******************")
+
+    if 1 in successes:
+        print("Time to first success:", successes.index(1) + 1, "episodes")
+    else:
+        print("Time to first success: not achieved")
+
+    def convert_to_percentage(top, bottom):
+        if bottom == 0:
+            return 0.0
+        else:
+            return 100 * top / bottom
+
+    env = vec_env.envs[0]
+    episodes = len(successes)
+
+    if episodes > 0:
+        print("Picked up key1:", 100 * env.key1_reached / episodes, "%")
+        print("Opened door1:", 100 * env.door1_opened / episodes, "%")
+        print("Picked up key2:", 100 * env.key2_reached / episodes, "%")
+        print("Opened door2:", 100 * env.door2_opened / episodes, "%")
+        print("Reached door1 with key1: ", 100 * env.door1_reached_with_key / episodes, "%")
+        print("Faced door1 with key1:",100 * env.door1_faced_with_key / episodes,"%")
+        print("P(door1 | key1): ", convert_to_percentage(env.door1_opened, env.key1_reached), "%")
+        print("P(key2 | door1): ", convert_to_percentage(env.key2_reached, env.door1_opened), "%")
+        print("P(door2 | key2): ", convert_to_percentage(env.door2_opened, env.key2_reached), "%")
+        print("P(reach door1 with key1 | key1): ", convert_to_percentage(env.door1_reached_with_key, env.key1_reached), "%")
+        print("P(open door1 | reached door1 with key1): ", convert_to_percentage(env.door1_opened, env.door1_reached_with_key), "%")
+        print("P(face door1 | reached door1):",convert_to_percentage(env.door1_faced_with_key,env.door1_reached_with_key),"%")
+        print("P(open door1 | faced door1):",convert_to_percentage(env.door1_opened,env.door1_faced_with_key),"%")
+        print("Average positive LP fraction:",np.mean(callback.history["positive_lp_fraction"]))
+        print("Mean prediction error:",np.mean(callback.history["mean_prediction_error"]))
+        print("Maximum episode mean prediction error:",np.max(callback.history["mean_prediction_error"]))
+        print("Mean learning progress:",np.mean(callback.history["mean_learning_progress"]))
+        print("Maximum episode mean learning progress:",np.max(callback.history["mean_learning_progress"]))
+    else:
+        print("No episodes completed.")
+    
+
+    def rolling_mean(values, window=100):
+        values = np.asarray(values, dtype=np.float32)
+
+        if len(values) < window:
+            return np.array([])
+
+        kernel = np.ones(window) / window
+
+        return np.convolve(
+            values,
+            kernel,
+            mode="valid"
+        )
+
+    trajectory = env.all_trajectories[-1]
+
+    xs = [p[0] for p in trajectory]
+    ys = [p[1] for p in trajectory]
+
+    plt.figure(figsize=(6, 6))
+    plt.plot(xs, ys, marker="o")
+    plt.gca().invert_yaxis()
+    plt.title("Agent Trajectory")
+    plt.xlabel("x position")
+    plt.ylabel("y position")
+    plt.grid(True)
+    plt.savefig(
+        os.path.join(save_dir, "trajectory_graph.png"),
+        dpi=300,
+        bbox_inches="tight"
+    )
+    plt.show()
+
+    plt.figure(figsize=(6, 6))
+    plt.imshow(env.visit_heatmap)
+    plt.colorbar(label="Visit count")
+    plt.title("Visited State Heatmap")
+    plt.xlabel("x position")
+    plt.ylabel("y position")
+    plt.savefig(
+        os.path.join(save_dir, "heatmap_chart.png"),
+        dpi=300,
+        bbox_inches="tight"
+    )
+    plt.show()
+
+    prediction_errors = callback.history["mean_prediction_error"]
+    learning_progress_values = callback.history["mean_learning_progress"]
+
+    plt.figure(figsize=(6,6))
+    plt.plot(
+        prediction_errors,
+        label="Mean prediction error"
+    )
+    plt.plot(
+        learning_progress_values,
+        label="Mean learning progress"
+    )
+    plt.xlabel("Episode")
+    plt.ylabel("Value")
+    plt.title("Prediction Error vs Learning Progress")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(
+        os.path.join(
+            save_dir,
+            "prediction_error_vs_learning_progress.png"
+        ),
+        dpi=300,
+        bbox_inches="tight"
+    )
+    plt.show()
+
+    plt.figure(figsize=(6,6))
+    plt.plot(
+        callback.history["mean_fast_pred_error"],
+        label="Fast error EMA"
+    )
+    plt.plot(
+        callback.history["mean_slow_pred_error"],
+        label="Slow error EMA"
+    )
+    plt.xlabel("Episode")
+    plt.ylabel("Prediction error")
+    plt.title("Fast and Slow Prediction-Error Averages")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(
+        os.path.join(
+            save_dir,
+            "fast_vs_slow_error.png"
+        ),
+        dpi=300,
+        bbox_inches="tight"
+    )
+    plt.show()
+
+    with open(os.path.join(save_dir, "run_trajectories.pkl"), "wb") as f:
+        pickle.dump(env.all_trajectories, f)
+    np.save(os.path.join(save_dir, "visit_heatmap.npy"),env.visit_heatmap)
+    metrics = {
+        "seed": seed,
+        "episodes_logged": len(successes),
+        "success_rate": np.mean(successes),
+        "avg_return": np.mean(returns),
+        "avg_intrinsic_reward": np.mean(intrinsic_rewards),
+        "avg_state_coverage": np.mean(coverages),
+        "avg_extrinsic_return": np.mean(callback.history["extrinsic_return"]),
+        "time_to_first_success":
+            successes.index(1) + 1 if 1 in successes else None,
+        
+    }
+
+    with open(os.path.join(save_dir, "metrics.pkl"), "wb") as f:
+        pickle.dump(metrics, f)
+
+    vec_env.close()
+
+
+print("\n==============================")
+print("MULTI-SEED RESULTS")
+print("==============================")
+
+metrics_to_summarise = [
+    "success_rate",
+    "coverage",
+    "last_100_coverage",
+    "key1_rate",
+    "door1_rate",
+    "door1_with_key_rate",
+    "p_reach_door1_given_key1",
+    "p_open_door1_given_reached",
+    "door1_faced_with_key_rate",
+    "p_face_door1_given_reached",
+    "p_open_door1_given_faced",
+]
+
+for metric in metrics_to_summarise:
+    values = [
+        result[metric]
+        for result in all_seed_results
+    ]
+
+    print(
+        f"{metric}: "
+        f"{np.mean(values):.4f} "
+        f"± {np.std(values):.4f}"
+    )
