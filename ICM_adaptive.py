@@ -36,6 +36,7 @@ class MetricsCallback(BaseCallback):
                         "mean_learning_progress":[],
                         "mean_fast_pred_error":[],
                         "mean_slow_pred_error":[],
+                        "positive_lp_fraction": [],
                         }
 
     def _on_step(self):
@@ -100,10 +101,11 @@ class MetricsWrapper(gym.Wrapper):
         self.previous_observations = None
         self.intrinsic_reward_scale = 1.0
 
-        self.learning_progress_fast = 0.1
+        self.learning_progress_fast = 0.01
         self.learning_progress_slow = 0.001
         self.fast_pred_error = None
         self.slow_pred_error = None
+        self.learning_progress_clip = 0.1
 
         self.episode_trajectory = []
         self.all_trajectories = []
@@ -148,6 +150,7 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_success = 0
         self.episode_extrinsic_return = 0
         self.episode_steps = 0
+        self.episode_positive_lp_steps = 0
         self.episode_states = set()
 
         self.ep_key1 = False
@@ -233,15 +236,26 @@ class MetricsWrapper(gym.Wrapper):
         self.icm_optimiser.step()
 
         prediction_error = float(prediction_error_tensor.item())
-
+        
         learning_progress = self.calculate_learning_progress(prediction_error)
-        intrinsic_reward = learning_progress * self.intrinsic_reward_scale
+        scaled_prediction_error = float(np.clip(prediction_error, 0.0, 0.1))
+        scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
+        prediction_error_weight = 0.2
+        learning_progress_weight = 0.8
+        
+        hybrid_reward = (prediction_error_weight * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
+
+        intrinsic_reward = hybrid_reward * self.intrinsic_reward_scale
         intrinsic_reward = float(np.clip(intrinsic_reward, 0.0, 0.1))
         extrinsic_reward = float(reward)
         total_reward = intrinsic_reward + extrinsic_reward
 
         info["intrinsic_reward"] = intrinsic_reward
         info["prediction_error"] = prediction_error
+        info["learning_progress"] = learning_progress
+        info["scaled_prediction_error"] = scaled_prediction_error
+        info["scaled_learning_progress"] = scaled_learning_progress
+        info["hybrid_intrinsic_reward"] = intrinsic_reward
         info["fast_pred_error"] = float(self.fast_pred_error)
         info["slow_pred_error"] = float(self.slow_pred_error)
         info["icm_forward_loss"] = float(forward_loss.item())
@@ -249,8 +263,11 @@ class MetricsWrapper(gym.Wrapper):
 
         self.episode_return += total_reward
         self.episode_intrinsic_reward += intrinsic_reward
-        self.episode_extrinsic_return += reward
+        self.episode_extrinsic_return += extrinsic_reward
         self.episode_steps += 1
+        if learning_progress > 0:
+            self.episode_positive_lp_steps += 1
+
         self.episode_states.add(self.state_key())
 
         self.episode_prediction_errors.append(prediction_error)
@@ -282,6 +299,7 @@ class MetricsWrapper(gym.Wrapper):
                 "mean_learning_progress": (float(np.mean(self.episode_learning_progress)) if self.episode_learning_progress else 0.0),
                 "mean_fast_pred_error": (float(np.mean(self.episode_fast_errors)) if self.episode_fast_errors else 0.0),
                 "mean_slow_pred_error": (float(np.mean(self.episode_slow_errors)) if self.episode_slow_errors else 0.0),
+                "positive_lp_fraction": (self.episode_positive_lp_steps / self.episode_steps if self.episode_steps > 0 else 0.0),
             })
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
@@ -357,7 +375,7 @@ def mean_last(values, window=100):
     window = min(window, len(values))
     return float(np.mean(values[-window:]))
 
-model.learn(total_timesteps=500_000, callback=callback)
+model.learn(total_timesteps=50_000, callback=callback)
 file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
 
 save_dir = os.path.join("results", file_name)
@@ -375,7 +393,6 @@ print("Average intrinsic reward:", np.mean(intrinsic_rewards))
 print("Average state coverage:", np.mean(coverages))
 print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"]))
 print("Action dim:", action_dim)
-print("Intrinsic reward:", intrinsic_rewards)
 
 print("*******************")
 print("Success rate over last 100 episodes: ", mean_last(successes, 100) * 100, "%")
@@ -388,6 +405,11 @@ if 1 in successes:
 else:
     print("Time to first success: not achieved")
 
+def convert_to_percentage(top, bottom):
+    if bottom == 0:
+        return 0.0
+    else:
+        return 100 * top / bottom
 
 env = vec_env.envs[0]
 episodes = len(successes)
@@ -398,16 +420,21 @@ if episodes > 0:
     print("Picked up key2:", 100 * env.key2_reached / episodes, "%")
     print("Opened door2:", 100 * env.door2_opened / episodes, "%")
     print("Reached door1 with key1: ", 100 * env.door1_reached_with_key / episodes, "%")
+    print("P(door1 | key1): ", convert_to_percentage(env.door1_opened, env.key1_reached), "%")
+    print("P(key2 | door1): ", convert_to_percentage(env.key2_reached, env.door1_opened), "%")
+    print("P(door2 | key2): ", convert_to_percentage(env.door2_opened, env.key2_reached), "%")
+    print("P(reach door1 with key1 | key1): ", convert_to_percentage(env.door1_reached_with_key, env.key1_reached), "%")
+    print("P(open door1 | reached door1 with key1): ", convert_to_percentage(env.door1_opened, env.door1_reached_with_key), "%")
+    print("Average positive LP fraction:",np.mean(callback.history["positive_lp_fraction"]))
+    print("Mean prediction error:",np.mean(callback.history["mean_prediction_error"]))
+    print("Maximum episode mean prediction error:",np.max(callback.history["mean_prediction_error"]))
+    print("Mean learning progress:",np.mean(callback.history["mean_learning_progress"]))
+    print("Maximum episode mean learning progress:",np.max(callback.history["mean_learning_progress"]))
 else:
     print("No episodes completed.")
 
 
-def convert_to_percentage(top, bottom):
-    if bottom == 0:
-        return 0.0
-    else:
-        return 100 * top / bottom
-        
+
 def rolling_mean(values, window=100):
     values = np.asarray(values, dtype=np.float32)
 
@@ -449,6 +476,57 @@ plt.xlabel("x position")
 plt.ylabel("y position")
 plt.savefig(
     os.path.join(save_dir, "heatmap_chart.png"),
+    dpi=300,
+    bbox_inches="tight"
+)
+plt.show()
+
+prediction_errors = callback.history["mean_prediction_error"]
+learning_progress_values = callback.history["mean_learning_progress"]
+
+plt.figure(figsize=(6,6))
+plt.plot(
+    prediction_errors,
+    label="Mean prediction error"
+)
+plt.plot(
+    learning_progress_values,
+    label="Mean learning progress"
+)
+plt.xlabel("Episode")
+plt.ylabel("Value")
+plt.title("Prediction Error vs Learning Progress")
+plt.legend()
+plt.grid(True)
+plt.savefig(
+    os.path.join(
+        save_dir,
+        "prediction_error_vs_learning_progress.png"
+    ),
+    dpi=300,
+    bbox_inches="tight"
+)
+plt.show()
+
+plt.figure(figsize=(6,6))
+plt.plot(
+    callback.history["mean_fast_pred_error"],
+    label="Fast error EMA"
+)
+plt.plot(
+    callback.history["mean_slow_pred_error"],
+    label="Slow error EMA"
+)
+plt.xlabel("Episode")
+plt.ylabel("Prediction error")
+plt.title("Fast and Slow Prediction-Error Averages")
+plt.legend()
+plt.grid(True)
+plt.savefig(
+    os.path.join(
+        save_dir,
+        "fast_vs_slow_error.png"
+    ),
     dpi=300,
     bbox_inches="tight"
 )
