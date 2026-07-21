@@ -21,7 +21,22 @@ from gymnasium.wrappers import FilterObservation, FlattenObservation
 class MetricsCallback(BaseCallback):
     def __init__(self):
         super().__init__()
-        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": [], "key1": [], "door1": [], "key2": [], "door2": [], "door1_with_key": [], "mean_intrinsic_per_step":[]}
+        self.history = {"return": [],
+                        "success": [],
+                        "intrinsic_reward": [],
+                        "state_coverage": [], 
+                        "extrinsic_return": [], 
+                        "key1": [], 
+                        "door1": [], 
+                        "key2": [], 
+                        "door2": [], 
+                        "door1_with_key": [], 
+                        "mean_intrinsic_per_step":[],
+                        "mean_prediction_error": [],
+                        "mean_learning_progress":[],
+                        "mean_fast_pred_error":[],
+                        "mean_slow_pred_error":[],
+                        }
 
     def _on_step(self):
         env = self.training_env.envs[0]
@@ -141,6 +156,11 @@ class MetricsWrapper(gym.Wrapper):
         self.ep_door2 = False
         self.ep_door1_reached_with_key = False
 
+        self.episode_prediction_errors = []
+        self.episode_learning_progress = []
+        self.episode_fast_errors = []
+        self.episode_slow_errors = []
+
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -221,7 +241,9 @@ class MetricsWrapper(gym.Wrapper):
         total_reward = intrinsic_reward + extrinsic_reward
 
         info["intrinsic_reward"] = intrinsic_reward
-        info["raw_intrinsic_reward"] = raw_intrinsic_reward
+        info["prediction_error"] = prediction_error
+        info["fast_pred_error"] = float(self.fast_pred_error)
+        info["slow_pred_error"] = float(self.slow_pred_error)
         info["icm_forward_loss"] = float(forward_loss.item())
         info["icm_inverse_loss"] = float(inverse_loss.item())
 
@@ -230,6 +252,11 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_extrinsic_return += reward
         self.episode_steps += 1
         self.episode_states.add(self.state_key())
+
+        self.episode_prediction_errors.append(prediction_error)
+        self.episode_learning_progress.append(learning_progress)
+        self.episode_fast_errors.append(float(self.fast_pred_error))
+        self.episode_slow_errors.append(float(self.slow_pred_error))
 
 
         if reward > 0:
@@ -251,6 +278,10 @@ class MetricsWrapper(gym.Wrapper):
                 "door2": int(self.ep_door2),
                 "door1_with_key": int(self.ep_door1_reached_with_key),
                 "mean_intrinsic_per_step": (self.episode_intrinsic_reward / self.episode_steps if self.episode_steps > 0 else 0.0),
+                "mean_prediction_error": (float(np.mean(self.episode_prediction_errors)) if self.episode_prediction_errors else 0.0),
+                "mean_learning_progress": (float(np.mean(self.episode_learning_progress)) if self.episode_learning_progress else 0.0),
+                "mean_fast_pred_error": (float(np.mean(self.episode_fast_errors)) if self.episode_fast_errors else 0.0),
+                "mean_slow_pred_error": (float(np.mean(self.episode_slow_errors)) if self.episode_slow_errors else 0.0),
             })
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
@@ -370,6 +401,13 @@ if episodes > 0:
 else:
     print("No episodes completed.")
 
+
+def convert_to_percentage(top, bottom):
+    if bottom == 0:
+        return 0.0
+    else:
+        return 100 * top / bottom
+        
 def rolling_mean(values, window=100):
     values = np.asarray(values, dtype=np.float32)
 
