@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 
 from MiniGrid import MiniGrid
 from gymnasium.wrappers import FilterObservation, FlattenObservation
+import torch
 
 
 class MetricsCallback(BaseCallback):
@@ -194,6 +195,8 @@ def make_env():
 
 vec_env = DummyVecEnv([make_env])
 vec_env.seed(42)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 model = PPO(
     "MlpPolicy",
