@@ -39,6 +39,8 @@ class MetricsCallback(BaseCallback):
                         "mean_slow_pred_error":[],
                         "positive_lp_fraction": [],
                         "door1_faced_with_key": [],
+                        "door2_with_key":[],
+                        "door2_faced_with_key": [],
                         }
 
     def _on_step(self):
@@ -126,12 +128,18 @@ class MetricsWrapper(gym.Wrapper):
         self.door1_opened = 0
         self.key2_reached = 0
         self.door2_opened = 0
+
         self.door1_reached_with_key = 0
         self.door1_faced_with_key = 0
+        self.door2_reached_with_key = 0
+        self.door2_faced_with_key = 0
 
         self.door_shaping_gamma = 0.995
+
         self.door1_reward_scale = 0.0025
         self.door1_completion_bonus = 0.05
+        self.door2_reward_scale = 0.0025
+        self.door2_completion_bonus = 0.05
 
         self.reset_episode_metrics()
     
@@ -164,9 +172,14 @@ class MetricsWrapper(gym.Wrapper):
         self.ep_door1 = False
         self.ep_key2 = False
         self.ep_door2 = False
+
         self.ep_door1_reached_with_key = False
         self.previous_door1_distance = None
         self.ep_door1_faced_with_key = False
+
+        self.ep_door2_reached_with_key = False
+        self.previous_door2_distance = None
+        self.ep_door2_faced_with_key = False
 
         self.episode_prediction_errors = []
         self.episode_learning_progress = []
@@ -204,9 +217,21 @@ class MetricsWrapper(gym.Wrapper):
         agent_x, agent_y = self.unwrapped.agent_pos
         door_x = self.unwrapped.wall1
         door_y = self.unwrapped.door1_pos
-
+        
         return (abs(int(agent_x) - int(door_x)) + abs(int(agent_y) - int(door_y)))
 
+
+    def check_if_carrying_key2(self):
+        carrying = self.unwrapped.carrying
+        return (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key2_colour)
+    
+    def distance_to_door2(self):
+        agent_x, agent_y = self.unwrapped.agent_pos
+        door_x = self.unwrapped.wall2
+        door_y = self.unwrapped.door2_pos
+        return (abs(int(agent_x) - int(door_x)) + abs(int(agent_y) - int(door_y)))
+
+    
     def update_subgoal_metrics(self):
         grid = self.unwrapped.grid
         carrying = self.unwrapped.carrying
@@ -237,14 +262,28 @@ class MetricsWrapper(gym.Wrapper):
 
         if (carrying_key1 and int(front_x) == int(self.unwrapped.wall1) and int(front_y) == int(self.unwrapped.door1_pos)):
             self.ep_door1_faced_with_key = True
+        
+        door2_distance = (abs(int(agent_x) - int(self.unwrapped.wall2)) + abs(int(agent_y) - int(self.unwrapped.door2_pos)))
+        
+        carrying_key2 = (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key2_colour)
+
+        if carrying_key2 and door2_distance == 1:
+            self.ep_door2_reached_with_key = True
+
+        
+        if (carrying_key2 and int(front_x) == int(self.unwrapped.wall2) and int(front_y) == int(self.unwrapped.door2_pos)):
+            self.ep_door2_faced_with_key = True
 
     def step(self, action):
         door1_was_open = self.ep_door1
+        door2_was_open = self.ep_door2
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.update_subgoal_metrics()
 
         door1_just_opened = (not door1_was_open and self.ep_door1)
         door1_completion_bonus = (self.door1_completion_bonus if door1_just_opened else 0.0)
+        door2_just_opened = (not door2_was_open and self.ep_door2)
+        door2_completion_bonus = (self.door2_completion_bonus if door2_just_opened else 0.0)
 
         x, y = self.unwrapped.agent_pos
         self.episode_trajectory.append((int(x), int(y)))
@@ -282,6 +321,18 @@ class MetricsWrapper(gym.Wrapper):
             self.previous_door1_distance = current_distance
         else:
             self.previous_door1_distance = None
+        
+        door2_progress_reward = 0.0
+        if self.check_if_carrying_key2():
+            current_distance = self.distance_to_door2()
+            if self.previous_door2_distance is not None:
+                previous_potential = -float(self.previous_door2_distance)
+                current_potential = -float(current_distance)
+                door2_progress_reward = (self.door_shaping_gamma * current_potential - previous_potential)
+            self.previous_door2_distance = current_distance
+        else:
+            self.previous_door2_distance = None
+
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
         prediction_error_weight = 0.2
         learning_progress_weight = 0.8
@@ -290,20 +341,28 @@ class MetricsWrapper(gym.Wrapper):
 
         intrinsic_reward = hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
-        total_intrinsic_reward = (intrinsic_reward + scaled_door1_reward + door1_completion_bonus)
+        scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
+        total_intrinsic_reward = (intrinsic_reward + scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus)
         total_intrinsic_reward = float(np.clip(total_intrinsic_reward, 0.0, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
 
         info["intrinsic_reward"] = total_intrinsic_reward
         info["hybrid_reward"] = hybrid_reward
+
         info["door1_progress_reward"] = door1_progress_reward
         info["scaled_door1_reward"] = scaled_door1_reward
         info["door1_completion_bonus"] = door1_completion_bonus
+
+        info["door2_progress_reward"] = door2_progress_reward
+        info["scaled_door2_reward"] = scaled_door2_reward
+        info["door2_completion_bonus"] = door2_completion_bonus
+
         info["prediction_error"] = prediction_error
         info["learning_progress"] = learning_progress
         info["scaled_prediction_error"] = scaled_prediction_error
         info["scaled_learning_progress"] = scaled_learning_progress
+
         info["fast_pred_error"] = float(self.fast_pred_error)
         info["slow_pred_error"] = float(self.slow_pred_error)
         info["icm_forward_loss"] = float(forward_loss.item())
@@ -349,6 +408,8 @@ class MetricsWrapper(gym.Wrapper):
                 "mean_slow_pred_error": (float(np.mean(self.episode_slow_errors)) if self.episode_slow_errors else 0.0),
                 "positive_lp_fraction": (self.episode_positive_lp_steps / self.episode_steps if self.episode_steps > 0 else 0.0),
                 "door1_faced_with_key": int(self.ep_door1_faced_with_key),
+                "door2_with_key": int(self.ep_door2_reached_with_key),
+                "door2_faced_with_key": int(self.ep_door2_faced_with_key),
             })
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
@@ -356,6 +417,8 @@ class MetricsWrapper(gym.Wrapper):
             self.door2_opened += int(self.ep_door2)
             self.door1_reached_with_key += int(self.ep_door1_reached_with_key)
             self.door1_faced_with_key += int(self.ep_door1_faced_with_key)
+            self.door2_reached_with_key += int(self.ep_door2_reached_with_key)
+            self.door2_faced_with_key += int(self.ep_door2_faced_with_key)
     
 
 
@@ -548,7 +611,62 @@ for seed in seeds:
         "door1_reached_count": env.door1_reached_with_key,
         "door1_faced_count": env.door1_faced_with_key,
         "door1_opened_count": env.door1_opened,
-        }
+        "key2_rate": (
+            env.key2_reached / episodes
+            if episodes > 0
+            else 0.0
+        ),
+        "door2_rate": (
+            env.door2_opened / episodes
+            if episodes > 0
+            else 0.0
+        ),
+        "door2_with_key_rate": (
+            env.door2_reached_with_key / episodes
+            if episodes > 0
+            else 0.0
+        ),
+        "p_reach_door2_given_key2": (
+            env.door2_reached_with_key
+            / env.key2_reached
+            if env.key2_reached > 0
+            else 0.0
+        ),
+        "p_open_door2_given_reached": (
+            env.door2_opened
+            / env.door2_reached_with_key
+            if env.door2_reached_with_key > 0
+            else 0.0
+        ),
+        "door2_faced_with_key_rate": (
+            env.door2_faced_with_key / episodes
+            if episodes > 0
+            else 0.0
+        ),
+
+        "p_face_door2_given_reached": (
+            env.door2_faced_with_key
+            / env.door2_reached_with_key
+            if env.door2_reached_with_key > 0
+            else 0.0
+        ),
+
+        "p_open_door2_given_faced": (
+            env.door2_opened
+            / env.door2_faced_with_key
+            if env.door2_faced_with_key > 0
+            else 0.0
+        ),
+        "key2_count": env.key2_reached,
+        "door2_reached_count": env.door2_reached_with_key,
+        "door2_faced_count": env.door2_faced_with_key,
+        "door2_opened_count": env.door2_opened,
+        "time_to_first_success": (
+            callback.history["success"].index(1) + 1
+            if 1 in callback.history["success"]
+            else np.nan
+        ),
+    }
 
     all_seed_results.append(seed_result)
     print("\n--------------------------------")
@@ -612,6 +730,15 @@ for seed in seeds:
         print("Maximum episode mean prediction error:",np.max(callback.history["mean_prediction_error"]))
         print("Mean learning progress:",np.mean(callback.history["mean_learning_progress"]))
         print("Maximum episode mean learning progress:",np.max(callback.history["mean_learning_progress"]))
+        print("Key1 over last 100 episodes:",mean_last(callback.history["key1"], 100) * 100,"%")
+        print("Door1 over last 100 episodes:", mean_last(callback.history["door1"], 100) * 100,"%")
+        print("Key2 over last 100 episodes:",mean_last(callback.history["key2"], 100) * 100,"%")
+        print("Door2 over last 100 episodes:",mean_last(callback.history["door2"], 100) * 100,"%")
+        print("Reached door2 with key2: ", 100 * env.door2_reached_with_key / episodes, "%")
+        print("Faced door2 with key2:",100 * env.door2_faced_with_key / episodes,"%")
+        print("P(reach door2 with key2 | key2): ", convert_to_percentage(env.door2_reached_with_key, env.key2_reached), "%")
+        print("P(face door2 | reached door2):",convert_to_percentage(env.door2_faced_with_key,env.door2_reached_with_key),"%")
+        print("P(open door2 | faced door2):",convert_to_percentage(env.door2_opened,env.door2_faced_with_key),"%")
     else:
         print("No episodes completed.")
     
@@ -751,21 +878,37 @@ metrics_to_summarise = [
     "door1_faced_with_key_rate",
     "p_face_door1_given_reached",
     "p_open_door1_given_faced",
+    "time_to_first_success",
+    "key2_rate",
+    "door2_rate",
+    "door2_with_key_rate",
+    "door2_faced_with_key_rate",
+    "p_reach_door2_given_key2",
+    "p_face_door2_given_reached",
+    "p_open_door2_given_faced",
+    "p_open_door2_given_reached",
 ]
 
 for metric in metrics_to_summarise:
-    values = [
-        result[metric]
-        for result in all_seed_results
-    ]
+    values = np.asarray(
+        [result[metric] for result in all_seed_results],
+        dtype=np.float32
+    )
+
+    if metric == "time_to_first_success":
+        mean = np.nanmean(values)
+        std = np.nanstd(values)
+    else:
+        mean = np.mean(values)
+        std = np.std(values)
 
     print(
         f"{metric}: "
-        f"{np.mean(values):.4f} "
-        f"± {np.std(values):.4f}"
+        f"{mean:.4f} "
+        f"± {std:.4f}"
     )
 
-    total_episodes = sum(
+total_episodes = sum(
     result["episodes"]
     for result in all_seed_results
 )
@@ -823,6 +966,68 @@ print(
     convert_to_percentage(
         total_door1_opened,
         total_door1_faced
+    ),
+    "%"
+)
+
+total_key2 = sum(
+    result["key2_count"]
+    for result in all_seed_results
+)
+
+total_door2_reached = sum(
+    result["door2_reached_count"]
+    for result in all_seed_results
+)
+
+total_door2_faced = sum(
+    result["door2_faced_count"]
+    for result in all_seed_results
+)
+
+total_door2_opened = sum(
+    result["door2_opened_count"]
+    for result in all_seed_results
+)
+
+
+print("Key2 collected:", total_key2)
+
+print(
+    "Door2 reached with Key2:",
+    total_door2_reached
+)
+
+print(
+    "Door2 faced with Key2:",
+    total_door2_faced
+)
+
+print("Door2 opened:", total_door2_opened)
+
+print(
+    "P(reach Door2 | Key2):",
+    convert_to_percentage(
+        total_door2_reached,
+        total_key2
+    ),
+    "%"
+)
+
+print(
+    "P(face Door2 | reached):",
+    convert_to_percentage(
+        total_door2_faced,
+        total_door2_reached
+    ),
+    "%"
+)
+
+print(
+    "P(open Door2 | faced):",
+    convert_to_percentage(
+        total_door2_opened,
+        total_door2_faced
     ),
     "%"
 )
