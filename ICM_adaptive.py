@@ -43,6 +43,11 @@ class MetricsCallback(BaseCallback):
                         "door2_faced_with_key": [],
                         "final_room_entered": [],
                         "goal_reached": [],
+                        "final_room_entry_direction": [],
+                        "distance_to_goal_at_entry": [],
+                        "steps_remaining_at_entry": [],
+                        "exited_final_room": [],
+                        "steps_from_entry_to_goal": [],
                         }
 
     def _on_step(self):
@@ -193,6 +198,13 @@ class MetricsWrapper(gym.Wrapper):
         self.previous_entry_distance = None
         self.previous_goal_distance = None
 
+        self.final_room_entry_direction = -1
+        self.distance_to_goal_at_entry = -1
+        self.steps_remaining_at_entry = -1
+        self.exited_final_room = False
+        self.step_entered_final_room = None
+        self.steps_from_entry_to_goal = -1
+
         self.episode_prediction_errors = []
         self.episode_learning_progress = []
         self.episode_fast_errors = []
@@ -313,9 +325,17 @@ class MetricsWrapper(gym.Wrapper):
         door2_just_opened = (not door2_was_open and self.ep_door2)
         door2_completion_bonus = (self.door2_completion_bonus if door2_just_opened else 0.0)
         final_room_just_entered = (not final_room_was_entered and self.ep_final_room_entered)
+        if final_room_just_entered:
+            self.final_room_entry_direction = int(self.unwrapped.agent_dir)
+            self.distance_to_goal_at_entry = int(self.distance_to_goal())
+            self.steps_remaining_at_entry = int(self.unwrapped.max_steps - self.unwrapped.step_count)
+            self.step_entered_final_room = int(self.episode_steps + 1)
         final_room_entry_bonus = (self.final_room_entry_bonus if final_room_just_entered else 0.0)
 
         x, y = self.unwrapped.agent_pos
+        if self.ep_final_room_entered and int(x) <= int(self.unwrapped.wall2):
+            self.exited_final_room = True
+
         self.episode_trajectory.append((int(x), int(y)))
         self.visit_heatmap[y, x] += 1
 
@@ -405,8 +425,10 @@ class MetricsWrapper(gym.Wrapper):
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
         scaled_entry_reward = (self.entry_reward_scale * entry_progress_reward)
         scaled_goal_reward = (self.goal_reward_scale * goal_progress_reward)
-        total_intrinsic_reward = (intrinsic_reward + scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
-        total_intrinsic_reward = float(np.clip(total_intrinsic_reward, 0.0, 0.15))
+
+        curiousity_reward = float(np.clip(intrinsic_reward, 0.0, 0.10))
+        shaping_reward = (scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
+        total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.3, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
 
@@ -458,6 +480,9 @@ class MetricsWrapper(gym.Wrapper):
             self.episode_success = 1
             self.ep_goal_reached = True
 
+            if self.step_entered_final_room is not None:
+                self.steps_from_entry_to_goal = int(self.episode_steps - self.step_entered_final_room)
+
         done = terminated or truncated
 
         if done:
@@ -483,8 +508,14 @@ class MetricsWrapper(gym.Wrapper):
                 "door2_with_key": int(self.ep_door2_reached_with_key),
                 "door2_faced_with_key": int(self.ep_door2_faced_with_key),
                 "final_room_entered": int(self.ep_final_room_entered),
-                "goal_reached": int(self.ep_goal_reached)
-            })
+                "goal_reached": int(self.ep_goal_reached),
+                "final_room_entry_direction": int(self.final_room_entry_direction),
+                "distance_to_goal_at_entry": int(self.distance_to_goal_at_entry),
+                "steps_remaining_at_entry": int(self.steps_remaining_at_entry),
+                "exited_final_room": int(self.exited_final_room),
+                "steps_from_entry_to_goal": int(self.steps_from_entry_to_goal),
+    })
+
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
             self.key2_reached += int(self.ep_key2)
@@ -567,7 +598,7 @@ def conditional_last(numerator_values,denominator_values,window=100):
 
     return float(top / bottom)
 
-seeds = [42, 123, 456]
+seeds = [42]
 
 all_seed_results = []
 
@@ -872,10 +903,102 @@ for seed in seeds:
         print("P(enter final room | Door2 opened) ""over last 100:",conditional_last(callback.history["final_room_entered"],callback.history["door2"],100) * 100,"%")
         print("P(goal | final room entered) ""over last 100:",conditional_last(callback.history["goal_reached"],callback.history["final_room_entered"],100) * 100,"%")
     
-    
+
+        entry_directions = np.asarray(callback.history["final_room_entry_direction"])
+        entry_goal_distances = np.asarray(callback.history["distance_to_goal_at_entry"])
+        entry_steps_remaining = np.asarray(callback.history["steps_remaining_at_entry"])
+        exited_final_room = np.asarray(callback.history["exited_final_room"])
+        steps_entry_to_goal = np.asarray(callback.history["steps_from_entry_to_goal"])
+        entered_mask = entry_directions >= 0
+
+        if np.any(entered_mask):
+            print("Average goal distance at final-room entry:",np.mean(entry_goal_distances[entered_mask]))
+            print("Average steps remaining at final-room entry:", np.mean(entry_steps_remaining[entered_mask]))
+            print("P(exit final room | entered):",np.mean(exited_final_room[entered_mask]) * 100,"%")
+
+        successful_entry_mask = steps_entry_to_goal >= 0
+
+        if np.any(successful_entry_mask):
+            print("Average steps from final-room entry to goal:",np.mean(steps_entry_to_goal[successful_entry_mask]))
+        else:
+            print("Average steps from final-room entry to goal:","No successful entries")
+
     else:
         print("No episodes completed.")
     
+
+    direction_names = {
+    0: "right",
+    1: "down",
+    2: "left",
+    3: "up"
+}
+
+    if np.any(entered_mask):
+        print("Final-room entry directions:")
+
+        for direction_id, direction_name in direction_names.items():
+            count = np.sum(entry_directions[entered_mask] == direction_id)
+
+            percentage = (100 * count / np.sum(entered_mask))
+
+            print(
+                f"{direction_name}: "
+                f"{count} "
+                f"({percentage:.2f}%)"
+            )
+
+    goal_history = np.asarray(
+        callback.history["goal_reached"]
+    )
+
+    entered_and_goal = (
+        entered_mask
+        & (goal_history == 1)
+    )
+
+    entered_without_goal = (
+        entered_mask
+        & (goal_history == 0)
+    )
+
+    if np.any(entered_and_goal):
+        print(
+            "Successful-entry average goal distance:",
+            np.mean(
+                entry_goal_distances[
+                    entered_and_goal
+                ]
+            )
+        )
+
+        print(
+            "Successful-entry average steps remaining:",
+            np.mean(
+                entry_steps_remaining[
+                    entered_and_goal
+                ]
+            )
+        )
+
+    if np.any(entered_without_goal):
+        print(
+            "Failed-entry average goal distance:",
+            np.mean(
+                entry_goal_distances[
+                    entered_without_goal
+                ]
+            )
+        )
+
+        print(
+            "Failed-entry average steps remaining:",
+            np.mean(
+                entry_steps_remaining[
+                    entered_without_goal
+                ]
+            )
+        )
 
     def rolling_mean(values, window=100):
         values = np.asarray(values, dtype=np.float32)
