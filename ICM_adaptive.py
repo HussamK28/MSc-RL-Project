@@ -144,7 +144,8 @@ class MetricsWrapper(gym.Wrapper):
         self.door1_completion_bonus = 0.05
         self.door2_reward_scale = 0.0025
         self.door2_completion_bonus = 0.05
-        self.goal_reward_scale = 0.0025
+        self.entry_reward_scale = 0.0015
+        self.goal_reward_scale = 0.0015
         self.final_room_entry_bonus = 0.02
 
         self.reset_episode_metrics()
@@ -189,6 +190,7 @@ class MetricsWrapper(gym.Wrapper):
 
         self.ep_final_room_entered = False
         self.ep_goal_reached = False
+        self.previous_entry_distance = None
         self.previous_goal_distance = None
 
         self.episode_prediction_errors = []
@@ -245,6 +247,12 @@ class MetricsWrapper(gym.Wrapper):
         agent_x, agent_y = self.unwrapped.agent_pos
         goal_x, goal_y = self.unwrapped.goal_pos
         return (abs(int(agent_x) - int(goal_x)) + abs(int(agent_y) - int(goal_y)))
+
+    def distance_to_final_room(self):
+        agent_x, agent_y = self.unwrapped.agent_pos
+        entry_x = int(self.unwrapped.wall2) + 1
+        entry_y = int(self.unwrapped.door2_pos)
+        return (abs(int(agent_x) - entry_x) + abs(int(agent_y) - entry_y))
 
     
     def update_subgoal_metrics(self):
@@ -355,15 +363,35 @@ class MetricsWrapper(gym.Wrapper):
         else:
             self.previous_door2_distance = None
         
+        entry_progress_reward = 0.0
         goal_progress_reward = 0.0
-        if self.ep_door2:
-            current_distance = self.distance_to_goal()
+
+        if self.ep_door2 and not self.ep_final_room_entered:
+            current_entry_distance = (self.distance_to_final_room())
+
+            if self.previous_entry_distance is not None:
+                previous_potential = -float(self.previous_entry_distance)
+
+                current_potential = -float(current_entry_distance)
+                entry_progress_reward = (self.door_shaping_gamma * current_potential - previous_potential)
+            self.previous_entry_distance = (current_entry_distance)
+
+            self.previous_goal_distance = None
+
+        elif self.ep_final_room_entered:
+            current_goal_distance = (self.distance_to_goal())
+
             if self.previous_goal_distance is not None:
                 previous_potential = -float(self.previous_goal_distance)
-                current_potential = -float(current_distance)
+                current_potential = -float(current_goal_distance)
+
                 goal_progress_reward = (self.door_shaping_gamma * current_potential - previous_potential)
-            self.previous_goal_distance = current_distance
+            self.previous_goal_distance = (current_goal_distance)
+
+            self.previous_entry_distance = None
+
         else:
+            self.previous_entry_distance = None
             self.previous_goal_distance = None
 
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
@@ -375,8 +403,9 @@ class MetricsWrapper(gym.Wrapper):
         intrinsic_reward = hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
+        scaled_entry_reward = (self.entry_reward_scale * entry_progress_reward)
         scaled_goal_reward = (self.goal_reward_scale * goal_progress_reward)
-        total_intrinsic_reward = (intrinsic_reward + scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus + scaled_goal_reward + final_room_entry_bonus)
+        total_intrinsic_reward = (intrinsic_reward + scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
         total_intrinsic_reward = float(np.clip(total_intrinsic_reward, 0.0, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
@@ -391,6 +420,9 @@ class MetricsWrapper(gym.Wrapper):
         info["door2_progress_reward"] = door2_progress_reward
         info["scaled_door2_reward"] = scaled_door2_reward
         info["door2_completion_bonus"] = door2_completion_bonus
+
+        info["entry_progress_reward"] = (entry_progress_reward)
+        info["scaled_entry_reward"] = (scaled_entry_reward)
 
         info["goal_progress_reward"] = goal_progress_reward
         info["scaled_goal_reward"] = scaled_goal_reward
@@ -519,6 +551,22 @@ def mean_last(values, window=100):
 
     window = min(window, len(values))
     return float(np.mean(values[-window:]))
+
+def conditional_last(numerator_values,denominator_values,window=100):
+    window = min(window,len(numerator_values),len(denominator_values))
+
+    if window == 0:
+        return 0.0
+
+    top = sum(numerator_values[-window:])
+
+    bottom = sum(denominator_values[-window:])
+
+    if bottom == 0:
+        return 0.0
+
+    return float(top / bottom)
+
 seeds = [42, 123, 456]
 
 all_seed_results = []
@@ -579,10 +627,7 @@ for seed in seeds:
 
     callback = MetricsCallback()
 
-    model.learn(
-        total_timesteps=500_000,
-        callback=callback
-    )
+    model.learn(total_timesteps=500_000,callback=callback)
 
     env = vec_env.envs[0]
     episodes = len(callback.history["success"])
@@ -823,7 +868,11 @@ for seed in seeds:
         print("P(goal | Final room reached):", convert_to_percentage(env.goal_reached, env.final_room_entered),"%")
         print("P(goal | Door2 opened):", convert_to_percentage(env.goal_reached, env.door2_opened),"%")
         print("Final room over last 100 episodes:", mean_last(callback.history['final_room_entered'], 100) * 100,"%")
-
+        print("Goal over last 100 episodes:",mean_last(callback.history["goal_reached"],100) * 100, "%")
+        print("P(enter final room | Door2 opened) ""over last 100:",conditional_last(callback.history["final_room_entered"],callback.history["door2"],100) * 100,"%")
+        print("P(goal | final room entered) ""over last 100:",conditional_last(callback.history["goal_reached"],callback.history["final_room_entered"],100) * 100,"%")
+    
+    
     else:
         print("No episodes completed.")
     
