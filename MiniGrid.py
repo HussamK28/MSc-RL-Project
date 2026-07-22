@@ -85,6 +85,8 @@ class MiniGrid(MiniGridEnv):
         self.grid.set(key1_x, key1_y, Key(key1_colour))
         self.grid.set(key2_x, key2_y, Key(key2_colour))
         self.grid.set(goal_x, goal_y, Goal())
+        self.goal_pos = (int(goal_x), int(goal_y))
+
 
         self.wall1 = wall1
         self.wall2 = wall2
