@@ -41,6 +41,8 @@ class MetricsCallback(BaseCallback):
                         "door1_faced_with_key": [],
                         "door2_with_key":[],
                         "door2_faced_with_key": [],
+                        "final_room_entered": [],
+                        "goal_reached": [],
                         }
 
     def _on_step(self):
@@ -133,6 +135,8 @@ class MetricsWrapper(gym.Wrapper):
         self.door1_faced_with_key = 0
         self.door2_reached_with_key = 0
         self.door2_faced_with_key = 0
+        self.final_room_entered = 0
+        self.goal_reached = 0
 
         self.door_shaping_gamma = 0.995
 
@@ -140,6 +144,8 @@ class MetricsWrapper(gym.Wrapper):
         self.door1_completion_bonus = 0.05
         self.door2_reward_scale = 0.0025
         self.door2_completion_bonus = 0.05
+        self.goal_reward_scale = 0.0025
+        self.final_room_entry_bonus = 0.02
 
         self.reset_episode_metrics()
     
@@ -180,6 +186,10 @@ class MetricsWrapper(gym.Wrapper):
         self.ep_door2_reached_with_key = False
         self.previous_door2_distance = None
         self.ep_door2_faced_with_key = False
+
+        self.ep_final_room_entered = False
+        self.ep_goal_reached = False
+        self.previous_goal_distance = None
 
         self.episode_prediction_errors = []
         self.episode_learning_progress = []
@@ -231,6 +241,11 @@ class MetricsWrapper(gym.Wrapper):
         door_y = self.unwrapped.door2_pos
         return (abs(int(agent_x) - int(door_x)) + abs(int(agent_y) - int(door_y)))
 
+    def distance_to_goal(self):
+        agent_x, agent_y = self.unwrapped.agent_pos
+        goal_x, goal_y = self.unwrapped.goal_pos
+        return (abs(int(agent_x) - int(goal_x)) + abs(int(agent_y) - int(goal_y)))
+
     
     def update_subgoal_metrics(self):
         grid = self.unwrapped.grid
@@ -273,10 +288,15 @@ class MetricsWrapper(gym.Wrapper):
         
         if (carrying_key2 and int(front_x) == int(self.unwrapped.wall2) and int(front_y) == int(self.unwrapped.door2_pos)):
             self.ep_door2_faced_with_key = True
+        
+        if (self.ep_door2 and int(agent_x) > int(self.unwrapped.wall2)):
+            self.ep_final_room_entered = True
 
     def step(self, action):
         door1_was_open = self.ep_door1
         door2_was_open = self.ep_door2
+        final_room_was_entered = self.ep_final_room_entered
+
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.update_subgoal_metrics()
 
@@ -284,6 +304,8 @@ class MetricsWrapper(gym.Wrapper):
         door1_completion_bonus = (self.door1_completion_bonus if door1_just_opened else 0.0)
         door2_just_opened = (not door2_was_open and self.ep_door2)
         door2_completion_bonus = (self.door2_completion_bonus if door2_just_opened else 0.0)
+        final_room_just_entered = (not final_room_was_entered and self.ep_final_room_entered)
+        final_room_entry_bonus = (self.final_room_entry_bonus if final_room_just_entered else 0.0)
 
         x, y = self.unwrapped.agent_pos
         self.episode_trajectory.append((int(x), int(y)))
@@ -332,6 +354,17 @@ class MetricsWrapper(gym.Wrapper):
             self.previous_door2_distance = current_distance
         else:
             self.previous_door2_distance = None
+        
+        goal_progress_reward = 0.0
+        if self.ep_door2:
+            current_distance = self.distance_to_goal()
+            if self.previous_goal_distance is not None:
+                previous_potential = -float(self.previous_goal_distance)
+                current_potential = -float(current_distance)
+                goal_progress_reward = (self.door_shaping_gamma * current_potential - previous_potential)
+            self.previous_goal_distance = current_distance
+        else:
+            self.previous_goal_distance = None
 
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
         prediction_error_weight = 0.2
@@ -342,7 +375,8 @@ class MetricsWrapper(gym.Wrapper):
         intrinsic_reward = hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
-        total_intrinsic_reward = (intrinsic_reward + scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus)
+        scaled_goal_reward = (self.goal_reward_scale * goal_progress_reward)
+        total_intrinsic_reward = (intrinsic_reward + scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus + scaled_goal_reward + final_room_entry_bonus)
         total_intrinsic_reward = float(np.clip(total_intrinsic_reward, 0.0, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
@@ -357,6 +391,11 @@ class MetricsWrapper(gym.Wrapper):
         info["door2_progress_reward"] = door2_progress_reward
         info["scaled_door2_reward"] = scaled_door2_reward
         info["door2_completion_bonus"] = door2_completion_bonus
+
+        info["goal_progress_reward"] = goal_progress_reward
+        info["scaled_goal_reward"] = scaled_goal_reward
+        info["final_room_entry_bonus"] = final_room_entry_bonus
+        info["final_room_entered"] = int(self.ep_final_room_entered)
 
         info["prediction_error"] = prediction_error
         info["learning_progress"] = learning_progress
@@ -385,6 +424,7 @@ class MetricsWrapper(gym.Wrapper):
 
         if reward > 0:
             self.episode_success = 1
+            self.ep_goal_reached = True
 
         done = terminated or truncated
 
@@ -410,6 +450,8 @@ class MetricsWrapper(gym.Wrapper):
                 "door1_faced_with_key": int(self.ep_door1_faced_with_key),
                 "door2_with_key": int(self.ep_door2_reached_with_key),
                 "door2_faced_with_key": int(self.ep_door2_faced_with_key),
+                "final_room_entered": int(self.ep_final_room_entered),
+                "goal_reached": int(self.ep_goal_reached)
             })
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
@@ -419,7 +461,8 @@ class MetricsWrapper(gym.Wrapper):
             self.door1_faced_with_key += int(self.ep_door1_faced_with_key)
             self.door2_reached_with_key += int(self.ep_door2_reached_with_key)
             self.door2_faced_with_key += int(self.ep_door2_faced_with_key)
-    
+            self.final_room_entered += int(self.ep_final_room_entered)
+            self.goal_reached += int(self.ep_goal_reached)
 
 
         self.previous_observations = self.normalise_observations(obs)
@@ -661,6 +704,41 @@ for seed in seeds:
         "door2_reached_count": env.door2_reached_with_key,
         "door2_faced_count": env.door2_faced_with_key,
         "door2_opened_count": env.door2_opened,
+        "final_room_rate": (
+            env.final_room_entered / episodes
+            if episodes > 0
+            else 0.0
+        ),
+
+        "goal_rate": (
+            env.goal_reached / episodes
+            if episodes > 0
+            else 0.0
+        ),
+
+        "p_enter_final_room_given_door2": (
+            env.final_room_entered
+            / env.door2_opened
+            if env.door2_opened > 0
+            else 0.0
+        ),
+
+        "p_goal_given_final_room": (
+            env.goal_reached
+            / env.final_room_entered
+            if env.final_room_entered > 0
+            else 0.0
+        ),
+
+        "p_goal_given_door2": (
+            env.goal_reached
+            / env.door2_opened
+            if env.door2_opened > 0
+            else 0.0
+        ),
+
+        "final_room_count": env.final_room_entered,
+        "goal_count": env.goal_reached,
         "time_to_first_success": (
             callback.history["success"].index(1) + 1
             if 1 in callback.history["success"]
@@ -673,7 +751,7 @@ for seed in seeds:
     print(f"RESULTS FOR SEED {seed}")
     print("--------------------------------")
 
-    file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    file_name = datetime.now().strftime(f"goal_seed_{seed}_run_%Y%m%d_%H%M%S")
 
     save_dir = os.path.join("results", file_name)
     os.makedirs(save_dir, exist_ok=True)
@@ -739,6 +817,13 @@ for seed in seeds:
         print("P(reach door2 with key2 | key2): ", convert_to_percentage(env.door2_reached_with_key, env.key2_reached), "%")
         print("P(face door2 | reached door2):",convert_to_percentage(env.door2_faced_with_key,env.door2_reached_with_key),"%")
         print("P(open door2 | faced door2):",convert_to_percentage(env.door2_opened,env.door2_faced_with_key),"%")
+        print("Entered final room:", convert_to_percentage(env.final_room_entered, episodes), "%")
+        print("Reached Goal:", convert_to_percentage(env.goal_reached, episodes),"%")
+        print("P(enter final room | Door2 opened):", convert_to_percentage(env.final_room_entered, env.door2_opened),"%")
+        print("P(goal | Final room reached):", convert_to_percentage(env.goal_reached, env.final_room_entered),"%")
+        print("P(goal | Door2 opened):", convert_to_percentage(env.goal_reached, env.door2_opened),"%")
+        print("Final room over last 100 episodes:", mean_last(callback.history['final_room_entered'], 100) * 100,"%")
+
     else:
         print("No episodes completed.")
     
@@ -887,6 +972,11 @@ metrics_to_summarise = [
     "p_face_door2_given_reached",
     "p_open_door2_given_faced",
     "p_open_door2_given_reached",
+    "final_room_rate",
+    "goal_rate",
+    "p_enter_final_room_given_door2",
+    "p_goal_given_final_room",
+    "p_goal_given_door2",
 ]
 
 for metric in metrics_to_summarise:
@@ -990,6 +1080,15 @@ total_door2_opened = sum(
     for result in all_seed_results
 )
 
+total_final_room = sum(
+    result["final_room_count"]
+    for result in all_seed_results
+)
+
+total_goal = sum(
+    result["goal_count"]
+    for result in all_seed_results
+)
 
 print("Key2 collected:", total_key2)
 
@@ -1028,6 +1127,44 @@ print(
     convert_to_percentage(
         total_door2_opened,
         total_door2_faced
+    ),
+    "%"
+)
+
+
+print(
+    "Final room entered:",
+    total_final_room
+)
+
+print(
+    "Goal reached:",
+    total_goal
+)
+
+print(
+    "P(enter final room | Door2 opened):",
+    convert_to_percentage(
+        total_final_room,
+        total_door2_opened
+    ),
+    "%"
+)
+
+print(
+    "P(goal | final room entered):",
+    convert_to_percentage(
+        total_goal,
+        total_final_room
+    ),
+    "%"
+)
+
+print(
+    "P(goal | Door2 opened):",
+    convert_to_percentage(
+        total_goal,
+        total_door2_opened
     ),
     "%"
 )
