@@ -4,7 +4,7 @@ from datetime import datetime
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 
 import torch
 import torch.nn as nn
@@ -17,6 +17,19 @@ import matplotlib.pyplot as plt
 
 from MiniGrid import MiniGrid
 from gymnasium.wrappers import FilterObservation, FlattenObservation
+
+class IntrinsicAnnealingCallback(BaseCallback):
+    def __init__(self, total_timesteps, start=1.0, end=0.15):
+        super().__init__()
+        self.total_timesteps = total_timesteps
+        self.start = start
+        self.end = end
+    
+    def _on_step(self):
+        fraction = min(self.num_timesteps / self.total_timesteps, 1.0)
+        scale = (self.start + fraction * (self.end - self.start))
+        self.training_env.envs[0].intrinsic_reward_scale = scale
+        return True
 
 
 class MetricsCallback(BaseCallback):
@@ -48,6 +61,7 @@ class MetricsCallback(BaseCallback):
                         "steps_remaining_at_entry": [],
                         "exited_final_room": [],
                         "steps_from_entry_to_goal": [],
+                        "mean_intrinsic_scale": [],
                         }
 
     def _on_step(self):
@@ -209,6 +223,7 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_learning_progress = []
         self.episode_fast_errors = []
         self.episode_slow_errors = []
+        self.episode_intrinsic_scales = []
 
 
     def reset(self, **kwargs):
@@ -428,7 +443,7 @@ class MetricsWrapper(gym.Wrapper):
 
         curiousity_reward = float(np.clip(intrinsic_reward, 0.0, 0.10))
         shaping_reward = (scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
-        total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.3, 0.15))
+        total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.03, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
 
@@ -474,7 +489,7 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_learning_progress.append(learning_progress)
         self.episode_fast_errors.append(float(self.fast_pred_error))
         self.episode_slow_errors.append(float(self.slow_pred_error))
-
+        self.episode_intrinsic_scales.append(self.intrinsic_reward_scale)
 
         if reward > 0:
             self.episode_success = 1
@@ -514,6 +529,7 @@ class MetricsWrapper(gym.Wrapper):
                 "steps_remaining_at_entry": int(self.steps_remaining_at_entry),
                 "exited_final_room": int(self.exited_final_room),
                 "steps_from_entry_to_goal": int(self.steps_from_entry_to_goal),
+                "mean_intrinsic_scale": (float(np.mean(self.episode_intrinsic_scales)) if self.episode_intrinsic_scales else 1.0),
     })
 
             self.key1_reached += int(self.ep_key1)
@@ -598,7 +614,7 @@ def conditional_last(numerator_values,denominator_values,window=100):
 
     return float(top / bottom)
 
-seeds = [42]
+seeds = [42, 123, 456]
 
 all_seed_results = []
 
@@ -657,8 +673,10 @@ for seed in seeds:
     )
 
     callback = MetricsCallback()
+    annealing_callback = IntrinsicAnnealingCallback(total_timesteps=500_000, start=1.0, end=0.15)
 
-    model.learn(total_timesteps=500_000,callback=callback)
+
+    model.learn(total_timesteps=500_000,callback=CallbackList([annealing_callback, callback]))
 
     env = vec_env.envs[0]
     episodes = len(callback.history["success"])
@@ -911,6 +929,9 @@ for seed in seeds:
         steps_entry_to_goal = np.asarray(callback.history["steps_from_entry_to_goal"])
         entered_mask = entry_directions >= 0
 
+        print("Average intrinsic scale:", np.mean(callback.history["mean_intrinsic_scale"]))
+        print("Intrinsic scale over last 100 episodes:", mean_last(callback.history["mean_intrinsic_scale"], 100))
+        
         if np.any(entered_mask):
             print("Average goal distance at final-room entry:",np.mean(entry_goal_distances[entered_mask]))
             print("Average steps remaining at final-room entry:", np.mean(entry_steps_remaining[entered_mask]))
