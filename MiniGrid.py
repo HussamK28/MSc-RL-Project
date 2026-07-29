@@ -188,5 +188,5 @@ if __name__ == "__main__":
         env.render()
         time.sleep(2)
 
-    print("\n✅ Testing completed. Check positions and randomization visually.")
+    print("Testing completed.")
     env.close()
