@@ -1,4 +1,3 @@
-import random
 import time
 from minigrid.core.grid import Grid
 from minigrid.core.world_object import Door, Key, Goal, Wall, Ball
