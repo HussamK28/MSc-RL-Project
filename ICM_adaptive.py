@@ -169,6 +169,7 @@ class MetricsWrapper(gym.Wrapper):
         self.final_room_entry_bonus = 0.02
 
         self.bottleneck_window = 100
+        self.bottleneck_scale = 2.0
         self.bottleneck_history = {
             "door1": deque(maxlen=self.bottleneck_window),
             "door2": deque(maxlen=self.bottleneck_window),
@@ -566,6 +567,8 @@ class MetricsWrapper(gym.Wrapper):
             if self.ep_final_room_entered:
                 self.bottleneck_history["goal"].append(int(self.ep_goal_reached))
 
+            self.update_bottleneck_rewards()
+            
         self.previous_observations = self.normalise_observations(obs)
         
 
@@ -575,7 +578,7 @@ class MetricsWrapper(gym.Wrapper):
         obs = np.asarray(obs, dtype=np.float32)
         return obs / 10.0
 
-    def detect_bottleneck(self):
+    def get_bottleneck(self):
         success_rates = {}
         for stage, history in self.bottleneck_history.items():
             if len(history)>=20:
@@ -586,6 +589,24 @@ class MetricsWrapper(gym.Wrapper):
         
         bottleneck = min(success_rates, key=success_rates.get)
         return bottleneck
+    
+    def update_bottleneck_rewards(self):
+        bottleneck = self.get_bottleneck()
+        self.current_bottleneck = bottleneck
+        self.door1_reward_scale = self.door1_reward_scale
+        self.door2_reward_scale = self.door2_reward_scale
+        self.entry_reward_scale = self.entry_reward_scale
+        self.goal_reward_scale = self.goal_reward_scale
+
+        if bottleneck == "ddor1":
+            self.door1_reward_scale *= self.bottleneck_scale
+        elif bottleneck == "door2":
+            self.door2_reward_scale *= self.bottleneck_scale
+        elif bottleneck == "final_room":
+            self.entry_reward_scale *= self.bottleneck_scale
+        elif bottleneck == "goal":
+            self.entry_reward_scale *= self.bottleneck_scale
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
