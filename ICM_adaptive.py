@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 
 from MiniGrid import MiniGrid
 from gymnasium.wrappers import FilterObservation, FlattenObservation
+from collections import deque
 
 class IntrinsicAnnealingCallback(BaseCallback):
     def __init__(self, total_timesteps, start=1.0, end=0.15):
@@ -166,6 +167,15 @@ class MetricsWrapper(gym.Wrapper):
         self.entry_reward_scale = 0.0015
         self.goal_reward_scale = 0.0015
         self.final_room_entry_bonus = 0.02
+
+        self.bottleneck_window = 100
+        self.bottleneck_history = {
+            "door1": deque(maxlen=self.bottleneck_window),
+            "door2": deque(maxlen=self.bottleneck_window),
+            "final_room": deque(maxlen=self.bottleneck_window),
+            "goal": deque(maxlen=self.bottleneck_window),
+        }
+        self.current_bottleneck = None
 
         self.reset_episode_metrics()
     
