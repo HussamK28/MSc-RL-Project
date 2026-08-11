@@ -160,13 +160,18 @@ class MetricsWrapper(gym.Wrapper):
 
         self.door_shaping_gamma = 0.995
 
-        self.door1_reward_scale = 0.0025
+        self.base_door1_reward_scale = 0.0025
         self.door1_completion_bonus = 0.05
-        self.door2_reward_scale = 0.0025
+        self.base_door2_reward_scale = 0.0025
         self.door2_completion_bonus = 0.05
-        self.entry_reward_scale = 0.0015
-        self.goal_reward_scale = 0.0015
+        self.base_entry_reward_scale = 0.0015
+        self.base_goal_reward_scale = 0.0015
         self.final_room_entry_bonus = 0.02
+
+        self.door1_reward_scale = self.base_door1_reward_scale
+        self.door2_reward_scale = self.base_door2_reward_scale
+        self.entry_reward_scale = self.base_entry_reward_scale
+        self.goal_reward_scale = self.base_goal_reward_scale
 
         self.bottleneck_window = 100
         self.bottleneck_scale = 2.0
@@ -544,7 +549,6 @@ class MetricsWrapper(gym.Wrapper):
     })
 
 
-
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
             self.key2_reached += int(self.ep_key2)
@@ -563,12 +567,14 @@ class MetricsWrapper(gym.Wrapper):
             if self.ep_key2:
                 self.bottleneck_history["door2"].append(int(self.ep_door2))
             
+            if self.ep_door2:
+                self.bottleneck_history["final_room"].append(int(self.ep_final_room_entered))
             
             if self.ep_final_room_entered:
                 self.bottleneck_history["goal"].append(int(self.ep_goal_reached))
 
             self.update_bottleneck_rewards()
-            
+
         self.previous_observations = self.normalise_observations(obs)
         
 
@@ -589,6 +595,10 @@ class MetricsWrapper(gym.Wrapper):
         
         bottleneck = min(success_rates, key=success_rates.get)
         return bottleneck
+    
+    def adaptive_bottleneck_scale(self, base_scale, success_rate, bottleneck_scale=2.0):
+        difficulty = 1.0 - success_rate
+        return base_scale * 1.0 (1.0 + bottleneck_scale * difficulty)
     
     def update_bottleneck_rewards(self):
         bottleneck = self.get_bottleneck()
@@ -668,7 +678,7 @@ def conditional_last(numerator_values,denominator_values,window=100):
 
     return float(top / bottom)
 
-seeds = [42, 123, 456]
+seeds = [42]
 
 all_seed_results = []
 
