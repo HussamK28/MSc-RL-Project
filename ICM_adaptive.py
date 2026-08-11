@@ -542,6 +542,8 @@ class MetricsWrapper(gym.Wrapper):
                 "mean_intrinsic_scale": (float(np.mean(self.episode_intrinsic_scales)) if self.episode_intrinsic_scales else 1.0),
     })
 
+
+
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
             self.key2_reached += int(self.ep_key2)
@@ -553,6 +555,16 @@ class MetricsWrapper(gym.Wrapper):
             self.final_room_entered += int(self.ep_final_room_entered)
             self.goal_reached += int(self.ep_goal_reached)
 
+            if self.ep_key1:
+                self.bottleneck_history["door1"].append(int(self.ep_door1))
+
+
+            if self.ep_key2:
+                self.bottleneck_history["door2"].append(int(self.ep_door2))
+            
+            
+            if self.ep_final_room_entered:
+                self.bottleneck_history["goal"].append(int(self.ep_goal_reached))
 
         self.previous_observations = self.normalise_observations(obs)
         
@@ -563,6 +575,17 @@ class MetricsWrapper(gym.Wrapper):
         obs = np.asarray(obs, dtype=np.float32)
         return obs / 10.0
 
+    def detect_bottleneck(self):
+        success_rates = {}
+        for stage, history in self.bottleneck_history.items():
+            if len(history)>=20:
+                success_rates[stage] = np.mean(history)
+        
+        if not success_rates:
+            return None
+        
+        bottleneck = min(success_rates, key=success_rates.get)
+        return bottleneck
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
