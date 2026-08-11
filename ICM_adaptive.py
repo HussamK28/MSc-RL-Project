@@ -598,24 +598,34 @@ class MetricsWrapper(gym.Wrapper):
     
     def adaptive_bottleneck_scale(self, base_scale, success_rate, bottleneck_scale=2.0):
         difficulty = 1.0 - success_rate
-        return base_scale * 1.0 (1.0 + bottleneck_scale * difficulty)
+        return base_scale * (1.0 + bottleneck_scale * difficulty)
     
     def update_bottleneck_rewards(self):
-        bottleneck = self.get_bottleneck()
-        self.current_bottleneck = bottleneck
-        self.door1_reward_scale = self.door1_reward_scale
-        self.door2_reward_scale = self.door2_reward_scale
-        self.entry_reward_scale = self.entry_reward_scale
-        self.goal_reward_scale = self.goal_reward_scale
+        success_rates = {}
+        for stage, history in self.bottleneck_history.items():
+            if len(history) >= 20:
+                success_rates[stage] = float(np.mean(history))
+        
+        if not success_rates:
+            self.current_bottleneck = None
+            return
+        if all(rate>=0.95 for rate in success_rates.values()):
+            self.current_bottleneck = None
+        else:
+            self.current_bottleneck = min(success_rates, key=success_rates.get)
+        self.door1_reward_scale = self.base_door1_reward_scale
+        self.door2_reward_scale = self.base_door2_reward_scale
+        self.entry_reward_scale = self.base_entry_reward_scale
+        self.goal_reward_scale = self.base_goal_reward_scale
 
-        if bottleneck == "ddor1":
-            self.door1_reward_scale *= self.bottleneck_scale
-        elif bottleneck == "door2":
-            self.door2_reward_scale *= self.bottleneck_scale
-        elif bottleneck == "final_room":
-            self.entry_reward_scale *= self.bottleneck_scale
-        elif bottleneck == "goal":
-            self.entry_reward_scale *= self.bottleneck_scale
+        if "door1" in success_rates:
+            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, success_rates["door1"], self.bottleneck_scale)
+        if "door2" in success_rates:
+            self.door2_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, success_rates["door2"], self.bottleneck_scale)
+        if "final_room" in success_rates:
+            self.entry_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, success_rates["final_room"], self.bottleneck_scale)
+        if "goal" in success_rates:
+            self.goal_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, success_rates["goal"], self.bottleneck_scale)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -678,7 +688,7 @@ def conditional_last(numerator_values,denominator_values,window=100):
 
     return float(top / bottom)
 
-seeds = [42]
+seeds = [42, 123, 456]
 
 all_seed_results = []
 
@@ -995,6 +1005,26 @@ for seed in seeds:
 
         print("Average intrinsic scale:", np.mean(callback.history["mean_intrinsic_scale"]))
         print("Intrinsic scale over last 100 episodes:", mean_last(callback.history["mean_intrinsic_scale"], 100))
+
+        print("\n--- Bottleneck Awareness ---")
+        print("Current bottleneck:", env.current_bottleneck)
+
+        for stage, history in env.bottleneck_history.items():
+            if len(history) > 0:
+                print(
+                    f"{stage} recent success rate: "
+                    f"{np.mean(history) * 100:.2f}% "
+                    f"({len(history)} eligible episodes)"
+                )
+            else:
+                print(f"{stage} recent success rate: No data")
+
+        print("\n--- Adaptive Reward Scales ---")
+
+        print("Current Door1 reward scale:", env.door1_reward_scale)
+        print("Current Door2 reward scale:", env.door2_reward_scale)
+        print("Current final-room reward scale:", env.entry_reward_scale)
+        print("Current goal reward scale:", env.goal_reward_scale)
         
         if np.any(entered_mask):
             print("Average goal distance at final-room entry:",np.mean(entry_goal_distances[entered_mask]))
