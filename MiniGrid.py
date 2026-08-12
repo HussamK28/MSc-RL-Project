@@ -4,6 +4,15 @@ from minigrid.core.world_object import Door, Key, Goal, Wall, Ball
 from minigrid.minigrid_env import MiniGridEnv
 from minigrid.core.mission import MissionSpace
 
+class NoisyTVBall(Ball):
+    def __init__(self):
+        super().__init__("purple")
+    def can_overlap(self):
+        return True
+    def can_pickup(self):
+        return False
+
+        
 class MiniGrid(MiniGridEnv):
     def __init__(self, size=16, max_steps=500, noisy_tv=False, num_balls=10, fixed_layout=False, **kwargs):
         self.noisy_tv = noisy_tv
