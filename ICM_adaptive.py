@@ -584,17 +584,6 @@ class MetricsWrapper(gym.Wrapper):
         obs = np.asarray(obs, dtype=np.float32)
         return obs / 10.0
 
-    def get_bottleneck(self):
-        success_rates = {}
-        for stage, history in self.bottleneck_history.items():
-            if len(history)>=20:
-                success_rates[stage] = np.mean(history)
-        
-        if not success_rates:
-            return None
-        
-        bottleneck = min(success_rates, key=success_rates.get)
-        return bottleneck
     
     def adaptive_bottleneck_scale(self, base_scale, success_rate, bottleneck_scale=2.0):
         difficulty = 1.0 - success_rate
