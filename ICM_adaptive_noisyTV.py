@@ -63,6 +63,8 @@ class MetricsCallback(BaseCallback):
                         "exited_final_room": [],
                         "steps_from_entry_to_goal": [],
                         "mean_intrinsic_scale": [],
+                        "mean_noise_score": [],
+                        "mean_noise_reward_scale": [],
                         }
 
     def _on_step(self):
@@ -183,9 +185,11 @@ class MetricsWrapper(gym.Wrapper):
         }
         self.current_bottleneck = None
 
-        self.noisytv_prediction = 0.3
-        self.noisytv_progress = 0.001
-        self.noisytv_reward_scale = 0.1
+        self.noise_prediction_error_weight = 1.0
+        self.noise_epsilon = 1e-8
+        self.minimum_noise_scale = 0.05
+        self.episode_noise_scores = []
+        self.episode_noise_penalties = []
 
         self.reset_episode_metrics()
     
@@ -204,10 +208,6 @@ class MetricsWrapper(gym.Wrapper):
 
         return float(np.clip(learning_progress,0.0, self.learning_progress_clip))
 
-    def detect_noisy_states(self, pred_error, learning_progress):
-        high_error = pred_error > self.noisytv_prediction
-        low_progress = learning_progress < self.noisytv_progress
-        return high_error and low_progress
 
     def reset_episode_metrics(self):
         self.episode_return = 0
@@ -248,6 +248,8 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_fast_errors = []
         self.episode_slow_errors = []
         self.episode_intrinsic_scales = []
+        self.episode_noise_scores = []
+        self.episode_noise_penalties = []
 
 
     def reset(self, **kwargs):
@@ -454,16 +456,17 @@ class MetricsWrapper(gym.Wrapper):
             self.previous_goal_distance = None
 
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
-        prediction_error_weight = 0.2
-        learning_progress_weight = 0.8
-        detect_noisytv = self.detect_noisy_states(prediction_error, learning_progress)
-        noise_prediction_error = scaled_prediction_error
-        if detect_noisytv:
-            noise_prediction_error *= self.noisytv_reward_scale
-        
-        hybrid_reward = (prediction_error_weight * noise_prediction_error * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
+        prediction_error_weight = 0.1
+        learning_progress_weight = 0.9
 
-        intrinsic_reward = hybrid_reward * self.intrinsic_reward_scale
+        noise_score = (scaled_learning_progress / (scaled_learning_progress + self.noise_prediction_error_weight * scaled_prediction_error + self.noise_epsilon))
+        noise_score = float(np.clip(noise_score,0.0,1.0))
+
+        hybrid_reward = (prediction_error_weight * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
+        noise_reward_scale = (self.minimum_noise_scale + (1.0 - self.minimum_noise_scale) * noise_score)
+        noise_hybrid_reward = hybrid_reward * noise_reward_scale
+
+        intrinsic_reward = noise_hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
         scaled_entry_reward = (self.entry_reward_scale * entry_progress_reward)
@@ -504,6 +507,10 @@ class MetricsWrapper(gym.Wrapper):
         info["icm_forward_loss"] = float(forward_loss.item())
         info["icm_inverse_loss"] = float(inverse_loss.item())
 
+        info["noise_score"] = noise_score
+        info["noise_reward_scale"] = noise_reward_scale
+        info["noise_hybrid_reward"] = noise_hybrid_reward
+
         self.episode_return += total_reward
         self.episode_intrinsic_reward += total_intrinsic_reward
         self.episode_extrinsic_return += extrinsic_reward
@@ -518,6 +525,8 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_fast_errors.append(float(self.fast_pred_error))
         self.episode_slow_errors.append(float(self.slow_pred_error))
         self.episode_intrinsic_scales.append(self.intrinsic_reward_scale)
+        self.episode_noise_scores.append(noise_score)
+        self.episode_noise_penalties.append(noise_reward_scale)
 
         if reward > 0:
             self.episode_success = 1
@@ -558,6 +567,9 @@ class MetricsWrapper(gym.Wrapper):
                 "exited_final_room": int(self.exited_final_room),
                 "steps_from_entry_to_goal": int(self.steps_from_entry_to_goal),
                 "mean_intrinsic_scale": (float(np.mean(self.episode_intrinsic_scales)) if self.episode_intrinsic_scales else 1.0),
+                "mean_noise_score":(float(np.mean(self.episode_noise_scores)) if self.episode_noise_scores else 0.0),
+                "mean_noise_reward_scale":(float(np.mean(self.episode_noise_penalties)) if self.episode_noise_penalties else 1.0),
+
     })
 
 
@@ -631,7 +643,7 @@ class MetricsWrapper(gym.Wrapper):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-temp_env = MiniGrid(size=12, max_steps=400, noisy_tv=False, fixed_layout=True, render_mode=None)
+temp_env = MiniGrid(size=12, max_steps=400, noisy_tv=True, fixed_layout=True, render_mode=None)
 temp_env = FilterObservation(temp_env, ["image", "direction"])
 temp_env = FlattenObservation(temp_env)
 
@@ -646,7 +658,7 @@ def make_env(icm, icm_optimiser):
         env = MiniGrid(
             size=12,
             max_steps=400,
-            noisy_tv=False,
+            noisy_tv=True,
             fixed_layout=True,
             render_mode=None
         )
@@ -689,7 +701,7 @@ def conditional_last(numerator_values,denominator_values,window=100):
 
     return float(top / bottom)
 
-seeds = [42, 123, 456]
+seeds = [42]
 
 all_seed_results = []
 
@@ -995,7 +1007,10 @@ for seed in seeds:
         print("Goal over last 100 episodes:",mean_last(callback.history["goal_reached"],100) * 100, "%")
         print("P(enter final room | Door2 opened) ""over last 100:",conditional_last(callback.history["final_room_entered"],callback.history["door2"],100) * 100,"%")
         print("P(goal | final room entered) ""over last 100:",conditional_last(callback.history["goal_reached"],callback.history["final_room_entered"],100) * 100,"%")
-    
+        print("Mean noise score:",np.mean(callback.history["mean_noise_score"]))
+        print("Mean noise reward scale:",np.mean(callback.history["mean_noise_reward_scale"]))
+        print("Noise score over last 100 episodes:",mean_last(callback.history["mean_noise_score"], 100))
+        print("Noise reward scale over last 100 episodes:",mean_last(callback.history["mean_noise_reward_scale"], 100))
 
         entry_directions = np.asarray(callback.history["final_room_entry_direction"])
         entry_goal_distances = np.asarray(callback.history["distance_to_goal_at_entry"])
