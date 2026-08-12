@@ -183,6 +183,10 @@ class MetricsWrapper(gym.Wrapper):
         }
         self.current_bottleneck = None
 
+        self.noisytv_prediction = 0.3
+        self.noisytv_progress = 0.001
+        self.noisytv_reward_scale = 0.1
+
         self.reset_episode_metrics()
     
     def calculate_learning_progress(self, prediction_error):
@@ -200,6 +204,10 @@ class MetricsWrapper(gym.Wrapper):
 
         return float(np.clip(learning_progress,0.0, self.learning_progress_clip))
 
+    def detect_noisy_states(self, pred_error, learning_progress):
+        high_error = pred_error > self.noisytv_prediction
+        low_progress = learning_progress < self.noisytv_progress
+        return high_error and low_progress
 
     def reset_episode_metrics(self):
         self.episode_return = 0
@@ -448,8 +456,12 @@ class MetricsWrapper(gym.Wrapper):
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
         prediction_error_weight = 0.2
         learning_progress_weight = 0.8
+        detect_noisytv = self.detect_noisy_states(prediction_error, learning_progress)
+        noise_prediction_error = scaled_prediction_error
+        if detect_noisytv:
+            noise_prediction_error *= self.noisytv_reward_scale
         
-        hybrid_reward = (prediction_error_weight * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
+        hybrid_reward = (prediction_error_weight * noise_prediction_error * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
 
         intrinsic_reward = hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
