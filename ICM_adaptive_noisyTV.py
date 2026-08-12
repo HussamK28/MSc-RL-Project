@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 
 from MiniGrid import MiniGrid
 from gymnasium.wrappers import FilterObservation, FlattenObservation
+from collections import deque
 
 class IntrinsicAnnealingCallback(BaseCallback):
     def __init__(self, total_timesteps, start=1.0, end=0.15):
@@ -159,13 +160,28 @@ class MetricsWrapper(gym.Wrapper):
 
         self.door_shaping_gamma = 0.995
 
-        self.door1_reward_scale = 0.0025
+        self.base_door1_reward_scale = 0.0025
         self.door1_completion_bonus = 0.05
-        self.door2_reward_scale = 0.0025
+        self.base_door2_reward_scale = 0.0025
         self.door2_completion_bonus = 0.05
-        self.entry_reward_scale = 0.0015
-        self.goal_reward_scale = 0.0015
+        self.base_entry_reward_scale = 0.0015
+        self.base_goal_reward_scale = 0.0015
         self.final_room_entry_bonus = 0.02
+
+        self.door1_reward_scale = self.base_door1_reward_scale
+        self.door2_reward_scale = self.base_door2_reward_scale
+        self.entry_reward_scale = self.base_entry_reward_scale
+        self.goal_reward_scale = self.base_goal_reward_scale
+
+        self.bottleneck_window = 100
+        self.bottleneck_scale = 2.0
+        self.bottleneck_history = {
+            "door1": deque(maxlen=self.bottleneck_window),
+            "door2": deque(maxlen=self.bottleneck_window),
+            "final_room": deque(maxlen=self.bottleneck_window),
+            "goal": deque(maxlen=self.bottleneck_window),
+        }
+        self.current_bottleneck = None
 
         self.reset_episode_metrics()
     
@@ -532,6 +548,7 @@ class MetricsWrapper(gym.Wrapper):
                 "mean_intrinsic_scale": (float(np.mean(self.episode_intrinsic_scales)) if self.episode_intrinsic_scales else 1.0),
     })
 
+
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
             self.key2_reached += int(self.ep_key2)
@@ -543,6 +560,20 @@ class MetricsWrapper(gym.Wrapper):
             self.final_room_entered += int(self.ep_final_room_entered)
             self.goal_reached += int(self.ep_goal_reached)
 
+            if self.ep_key1:
+                self.bottleneck_history["door1"].append(int(self.ep_door1))
+
+
+            if self.ep_key2:
+                self.bottleneck_history["door2"].append(int(self.ep_door2))
+            
+            if self.ep_door2:
+                self.bottleneck_history["final_room"].append(int(self.ep_final_room_entered))
+            
+            if self.ep_final_room_entered:
+                self.bottleneck_history["goal"].append(int(self.ep_goal_reached))
+
+            self.update_bottleneck_rewards()
 
         self.previous_observations = self.normalise_observations(obs)
         
@@ -552,6 +583,38 @@ class MetricsWrapper(gym.Wrapper):
     def normalise_observations(self, obs):
         obs = np.asarray(obs, dtype=np.float32)
         return obs / 10.0
+
+    
+    def adaptive_bottleneck_scale(self, base_scale, success_rate, bottleneck_scale=2.0):
+        difficulty = 1.0 - success_rate
+        return base_scale * (1.0 + bottleneck_scale * difficulty)
+    
+    def update_bottleneck_rewards(self):
+        success_rates = {}
+        for stage, history in self.bottleneck_history.items():
+            if len(history) >= 20:
+                success_rates[stage] = float(np.mean(history))
+        
+        if not success_rates:
+            self.current_bottleneck = None
+            return
+        if all(rate>=0.95 for rate in success_rates.values()):
+            self.current_bottleneck = None
+        else:
+            self.current_bottleneck = min(success_rates, key=success_rates.get)
+        self.door1_reward_scale = self.base_door1_reward_scale
+        self.door2_reward_scale = self.base_door2_reward_scale
+        self.entry_reward_scale = self.base_entry_reward_scale
+        self.goal_reward_scale = self.base_goal_reward_scale
+
+        if "door1" in success_rates:
+            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, success_rates["door1"], self.bottleneck_scale)
+        if "door2" in success_rates:
+            self.door2_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, success_rates["door2"], self.bottleneck_scale)
+        if "final_room" in success_rates:
+            self.entry_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, success_rates["final_room"], self.bottleneck_scale)
+        if "goal" in success_rates:
+            self.goal_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, success_rates["goal"], self.bottleneck_scale)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -931,6 +994,26 @@ for seed in seeds:
 
         print("Average intrinsic scale:", np.mean(callback.history["mean_intrinsic_scale"]))
         print("Intrinsic scale over last 100 episodes:", mean_last(callback.history["mean_intrinsic_scale"], 100))
+
+        print("\n--- Bottleneck Awareness ---")
+        print("Current bottleneck:", env.current_bottleneck)
+
+        for stage, history in env.bottleneck_history.items():
+            if len(history) > 0:
+                print(
+                    f"{stage} recent success rate: "
+                    f"{np.mean(history) * 100:.2f}% "
+                    f"({len(history)} eligible episodes)"
+                )
+            else:
+                print(f"{stage} recent success rate: No data")
+
+        print("\n--- Adaptive Reward Scales ---")
+
+        print("Current Door1 reward scale:", env.door1_reward_scale)
+        print("Current Door2 reward scale:", env.door2_reward_scale)
+        print("Current final-room reward scale:", env.entry_reward_scale)
+        print("Current goal reward scale:", env.goal_reward_scale)
         
         if np.any(entered_mask):
             print("Average goal distance at final-room entry:",np.mean(entry_goal_distances[entered_mask]))
