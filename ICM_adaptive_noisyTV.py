@@ -168,7 +168,6 @@ class MetricsWrapper(gym.Wrapper):
         self.base_door2_reward_scale = 0.005
         self.door2_facing_bonus = 0.03
         self.door2_completion_bonus = 0.05
-        self.door2_reach_bonus = 0.03
 
         self.base_key2_reward_scale = 0.005
         self.key2_reward_scale = self.base_key2_reward_scale
@@ -186,6 +185,7 @@ class MetricsWrapper(gym.Wrapper):
         self.bottleneck_scale = 2.0
         self.bottleneck_history = {
             "door1": deque(maxlen=self.bottleneck_window),
+            "key2": deque(maxlen=self.bottleneck_window),
             "door2": deque(maxlen=self.bottleneck_window),
             "final_room": deque(maxlen=self.bottleneck_window),
             "goal": deque(maxlen=self.bottleneck_window),
@@ -200,6 +200,8 @@ class MetricsWrapper(gym.Wrapper):
 
         self.state_fast_error = {}
         self.state_slow_error = {}
+        self.state_visit_counts = {}
+        self.noise_min_visits = 5
 
         self.reset_episode_metrics()
     
@@ -389,7 +391,6 @@ class MetricsWrapper(gym.Wrapper):
         door1_was_faced = self.ep_door1_faced_with_key
         key2_was_reached = self.ep_key2
         door2_was_faced = self.ep_door2_faced_with_key
-        door2_was_reached = self.ep_door2_reached_with_key
 
 
         obs, reward, terminated, truncated, info = self.env.step(action)
@@ -405,8 +406,6 @@ class MetricsWrapper(gym.Wrapper):
         door2_completion_bonus = (self.door2_completion_bonus if door2_just_opened else 0.0)
         door2_just_faced = (not door2_was_faced and self.ep_door2_faced_with_key)
         door2_facing_bonus = (self.door2_facing_bonus if door2_just_faced else 0.0)
-        door2_just_reached = (not door2_was_reached and self.ep_door2_reached_with_key)
-        door2_reach_bonus = (self.door2_reach_bonus if door2_just_reached else 0.0)
 
         final_room_just_entered = (not final_room_was_entered and self.ep_final_room_entered)
         if final_room_just_entered:
@@ -443,6 +442,9 @@ class MetricsWrapper(gym.Wrapper):
         prediction_error = float(prediction_error_tensor.item())
         
         current_state = self.state_key()
+        self.state_visit_counts[current_state] = (
+        self.state_visit_counts.get(current_state, 0) + 1)
+        state_visits = self.state_visit_counts[current_state]
         learning_progress = self.calculate_state_learning_progress(current_state, prediction_error)
         state_fast_error = self.state_fast_error[current_state]
         state_slow_error = self.state_slow_error[current_state]
@@ -515,8 +517,10 @@ class MetricsWrapper(gym.Wrapper):
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
         prediction_error_weight = 0.2
         learning_progress_weight = 0.8
-
-        noise_score = (scaled_learning_progress / (scaled_learning_progress + self.noise_prediction_error_weight * scaled_prediction_error + self.noise_epsilon))
+        if state_visits < self.noise_min_visits:
+            noise_score = 1.0
+        else:
+            noise_score = (scaled_learning_progress / (scaled_learning_progress + self.noise_prediction_error_weight * scaled_prediction_error + self.noise_epsilon))
         noise_score = float(np.clip(noise_score,0.0,1.0))
 
         hybrid_reward = (prediction_error_weight * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
@@ -531,7 +535,7 @@ class MetricsWrapper(gym.Wrapper):
         scaled_goal_reward = (self.goal_reward_scale * goal_progress_reward)
 
         curiousity_reward = float(np.clip(intrinsic_reward, 0.0, 0.10))
-        shaping_reward = (scaled_door1_reward + door1_facing_bonus + door1_completion_bonus + scaled_key2_reward + key2_completion_bonus + scaled_door2_reward +  door2_reach_bonus + door2_facing_bonus + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
+        shaping_reward = (scaled_door1_reward + door1_facing_bonus + door1_completion_bonus + scaled_key2_reward + key2_completion_bonus + scaled_door2_reward + door2_facing_bonus + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
         total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.03, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
@@ -572,7 +576,6 @@ class MetricsWrapper(gym.Wrapper):
         info["key2_progress_reward"] = key2_progress_reward
         info["scaled_key2_reward"] = scaled_key2_reward
         info["key2_completion_bonus"] = key2_completion_bonus
-        info["door2_reach_bonus"] = door2_reach_bonus
 
         self.episode_return += total_reward
         self.episode_intrinsic_reward += total_intrinsic_reward
@@ -650,6 +653,8 @@ class MetricsWrapper(gym.Wrapper):
             if self.ep_key1:
                 self.bottleneck_history["door1"].append(int(self.ep_door1))
 
+            if self.ep_door1:
+                self.bottleneck_history["key2"].append(int(self.ep_key2))
 
             if self.ep_key2:
                 self.bottleneck_history["door2"].append(int(self.ep_door2))
@@ -690,12 +695,16 @@ class MetricsWrapper(gym.Wrapper):
         else:
             self.current_bottleneck = min(success_rates, key=success_rates.get)
         self.door1_reward_scale = self.base_door1_reward_scale
+        self.key2_reward_scale = self.base_key2_reward_scale
         self.door2_reward_scale = self.base_door2_reward_scale
         self.entry_reward_scale = self.base_entry_reward_scale
         self.goal_reward_scale = self.base_goal_reward_scale
 
+
         if "door1" in success_rates:
             self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, success_rates["door1"], self.bottleneck_scale)
+        if "key2" in success_rates:
+            self.key2_reward_scale = self.adaptive_bottleneck_scale(self.base_key2_reward_scale, success_rates["key2"], self.bottleneck_scale)
         if "door2" in success_rates:
             self.door2_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, success_rates["door2"], self.bottleneck_scale)
         if "final_room" in success_rates:
