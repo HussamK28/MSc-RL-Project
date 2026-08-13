@@ -12,7 +12,7 @@ class NoisyTVBall(Ball):
     def can_pickup(self):
         return False
 
-        
+
 class MiniGrid(MiniGridEnv):
     def __init__(self, size=16, max_steps=500, noisy_tv=False, num_balls=10, fixed_layout=False, **kwargs):
         self.noisy_tv = noisy_tv
@@ -94,6 +94,7 @@ class MiniGrid(MiniGridEnv):
         self.grid.set(key2_x, key2_y, Key(key2_colour))
         self.grid.set(goal_x, goal_y, Goal())
         self.goal_pos = (int(goal_x), int(goal_y))
+        self.key2_pos = (int(key2_x), int(key2_y))
 
 
         self.wall1 = wall1
@@ -111,24 +112,19 @@ class MiniGrid(MiniGridEnv):
         else:
             self.place_agent(top=(1,1), size=(wall1 - 1, height - 2))
 
-        self.ball_positions_a = []
-        self.ball_positions_b = []
-
         if self.noisy_tv:
-            self.ball_positions_a = []
-            self.ball_positions_b = []
+            if len(self.ball_positions_a) == 0:
+                reserved = set()
 
-            reserved = set()
+                for _ in range(self.num_balls):
+                    position_a = self.get_empty_position(reserved)
+                    reserved.add(position_a)
 
-            for _ in range(self.num_balls):
-                position_a = self.get_empty_position(reserved)
-                reserved.add(position_a)
+                    position_b = self.get_empty_position(reserved)
+                    reserved.add(position_b)
 
-                position_b = self.get_empty_position(reserved)
-                reserved.add(position_b)
-
-                self.ball_positions_a.append(position_a)
-                self.ball_positions_b.append(position_b)
+                    self.ball_positions_a.append(position_a)
+                    self.ball_positions_b.append(position_b)
 
             self.place_noisy_tv()
 
@@ -151,13 +147,9 @@ class MiniGrid(MiniGridEnv):
 
 
     def place_noisy_tv(self):
-        for pos_a, pos_b in zip(self.ball_positions_a, self.ball_positions_b):
-            if self.np_random.random() < 0.5:
-                x, y = pos_a
-            else:
-                x, y = pos_b
-
-            self.grid.set(x, y, Ball("purple"))
+        positions = (self.ball_positions_a if self.episode_count < 625 else self.ball_positions_b)
+        for x,y in positions:
+            self.grid.set(x,y,NoisyTVBall())
     
     def step(self, action):
         carried_before = self.carrying
