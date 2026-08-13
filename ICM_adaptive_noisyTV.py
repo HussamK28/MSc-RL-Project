@@ -162,10 +162,17 @@ class MetricsWrapper(gym.Wrapper):
 
         self.door_shaping_gamma = 0.995
 
-        self.base_door1_reward_scale = 0.0025
+        self.base_door1_reward_scale = 0.005
         self.door1_completion_bonus = 0.05
-        self.base_door2_reward_scale = 0.0025
+        self.door1_facing_bonus = 0.03
+        self.base_door2_reward_scale = 0.005
+        self.door2_facing_bonus = 0.03
         self.door2_completion_bonus = 0.05
+        self.door2_reach_bonus = 0.03
+
+        self.base_key2_reward_scale = 0.005
+        self.key2_reward_scale = self.base_key2_reward_scale
+        self.key2_completion_bonus = 0.05
         self.base_entry_reward_scale = 0.0015
         self.base_goal_reward_scale = 0.0015
         self.final_room_entry_bonus = 0.02
@@ -187,9 +194,12 @@ class MetricsWrapper(gym.Wrapper):
 
         self.noise_prediction_error_weight = 1.0
         self.noise_epsilon = 1e-8
-        self.minimum_noise_scale = 0.05
+        self.minimum_noise_scale = 0.5
         self.episode_noise_scores = []
         self.episode_noise_penalties = []
+
+        self.state_fast_error = {}
+        self.state_slow_error = {}
 
         self.reset_episode_metrics()
     
@@ -208,6 +218,18 @@ class MetricsWrapper(gym.Wrapper):
 
         return float(np.clip(learning_progress,0.0, self.learning_progress_clip))
 
+
+    def calculate_state_learning_progress(self, state, prediction_error):
+        prediction_error = float(prediction_error)
+        if state not in self.state_fast_error:
+            self.state_fast_error[state] = prediction_error
+            self.state_slow_error[state] = prediction_error
+            return 0.0
+        self.state_fast_error[state] = (self.learning_progress_fast * prediction_error + (1.0 - self.learning_progress_fast) * self.state_fast_error[state])
+        self.state_slow_error[state] = (self.learning_progress_slow * prediction_error + (1.0 - self.learning_progress_slow) * self.state_slow_error[state])
+        learning_progress = (self.state_slow_error[state] - self.state_fast_error[state])
+
+        return float(np.clip(max(learning_progress,0.0),0.0, self.learning_progress_clip))
 
     def reset_episode_metrics(self):
         self.episode_return = 0
@@ -235,6 +257,7 @@ class MetricsWrapper(gym.Wrapper):
         self.ep_goal_reached = False
         self.previous_entry_distance = None
         self.previous_goal_distance = None
+        self.previous_key2_distance = None
 
         self.final_room_entry_direction = -1
         self.distance_to_goal_at_entry = -1
@@ -289,6 +312,12 @@ class MetricsWrapper(gym.Wrapper):
     def check_if_carrying_key2(self):
         carrying = self.unwrapped.carrying
         return (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key2_colour)
+    
+    def distance_to_key2(self):
+        agent_x, agent_y = self.unwrapped.agent_pos
+        key2_x, key2_y = self.unwrapped.key2_pos
+        return (abs(int(agent_x) - int(key2_x)) + abs(int(agent_y) - int(key2_y)))
+
     
     def distance_to_door2(self):
         agent_x, agent_y = self.unwrapped.agent_pos
@@ -357,14 +386,28 @@ class MetricsWrapper(gym.Wrapper):
         door1_was_open = self.ep_door1
         door2_was_open = self.ep_door2
         final_room_was_entered = self.ep_final_room_entered
+        door1_was_faced = self.ep_door1_faced_with_key
+        key2_was_reached = self.ep_key2
+        door2_was_faced = self.ep_door2_faced_with_key
+        door2_was_reached = self.ep_door2_reached_with_key
+
 
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.update_subgoal_metrics()
 
         door1_just_opened = (not door1_was_open and self.ep_door1)
         door1_completion_bonus = (self.door1_completion_bonus if door1_just_opened else 0.0)
+        door1_just_faced = (not door1_was_faced and self.ep_door1_faced_with_key)
+        door1_facing_bonus = (self.door1_facing_bonus if door1_just_faced else 0.0)
+        key2_just_reached = (not key2_was_reached and self.ep_key2)
+        key2_completion_bonus = (self.key2_completion_bonus if key2_just_reached else 0.0)
         door2_just_opened = (not door2_was_open and self.ep_door2)
         door2_completion_bonus = (self.door2_completion_bonus if door2_just_opened else 0.0)
+        door2_just_faced = (not door2_was_faced and self.ep_door2_faced_with_key)
+        door2_facing_bonus = (self.door2_facing_bonus if door2_just_faced else 0.0)
+        door2_just_reached = (not door2_was_reached and self.ep_door2_reached_with_key)
+        door2_reach_bonus = (self.door2_reach_bonus if door2_just_reached else 0.0)
+
         final_room_just_entered = (not final_room_was_entered and self.ep_final_room_entered)
         if final_room_just_entered:
             self.final_room_entry_direction = int(self.unwrapped.agent_dir)
@@ -399,7 +442,10 @@ class MetricsWrapper(gym.Wrapper):
 
         prediction_error = float(prediction_error_tensor.item())
         
-        learning_progress = self.calculate_learning_progress(prediction_error)
+        current_state = self.state_key()
+        learning_progress = self.calculate_state_learning_progress(current_state, prediction_error)
+        state_fast_error = self.state_fast_error[current_state]
+        state_slow_error = self.state_slow_error[current_state]
         scaled_prediction_error = float(np.clip(prediction_error, 0.0, 0.1))
 
         door1_progress_reward = 0.0
@@ -423,6 +469,17 @@ class MetricsWrapper(gym.Wrapper):
             self.previous_door2_distance = current_distance
         else:
             self.previous_door2_distance = None
+        
+        key2_progress_reward = 0.0
+        if self.ep_door1 and not self.ep_key2:
+            current_distance = self.distance_to_key2()
+            if self.previous_key2_distance is not None:
+                previous_potential = -float(self.previous_key2_distance)
+                current_potential = -float(current_distance)
+                key2_progress_reward = (self.door_shaping_gamma * current_potential - previous_potential)
+            self.previous_key2_distance = current_distance
+        else:
+            self.previous_key2_distance = None
         
         entry_progress_reward = 0.0
         goal_progress_reward = 0.0
@@ -456,8 +513,8 @@ class MetricsWrapper(gym.Wrapper):
             self.previous_goal_distance = None
 
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
-        prediction_error_weight = 0.1
-        learning_progress_weight = 0.9
+        prediction_error_weight = 0.2
+        learning_progress_weight = 0.8
 
         noise_score = (scaled_learning_progress / (scaled_learning_progress + self.noise_prediction_error_weight * scaled_prediction_error + self.noise_epsilon))
         noise_score = float(np.clip(noise_score,0.0,1.0))
@@ -469,11 +526,12 @@ class MetricsWrapper(gym.Wrapper):
         intrinsic_reward = noise_hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
+        scaled_key2_reward = (self.key2_reward_scale * key2_progress_reward)
         scaled_entry_reward = (self.entry_reward_scale * entry_progress_reward)
         scaled_goal_reward = (self.goal_reward_scale * goal_progress_reward)
 
         curiousity_reward = float(np.clip(intrinsic_reward, 0.0, 0.10))
-        shaping_reward = (scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
+        shaping_reward = (scaled_door1_reward + door1_facing_bonus + door1_completion_bonus + scaled_key2_reward + key2_completion_bonus + scaled_door2_reward +  door2_reach_bonus + door2_facing_bonus + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
         total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.03, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
@@ -502,14 +560,19 @@ class MetricsWrapper(gym.Wrapper):
         info["scaled_prediction_error"] = scaled_prediction_error
         info["scaled_learning_progress"] = scaled_learning_progress
 
-        info["fast_pred_error"] = float(self.fast_pred_error)
-        info["slow_pred_error"] = float(self.slow_pred_error)
+        info["fast_pred_error"] = float(state_fast_error)
+        info["slow_pred_error"] = float(state_slow_error)
         info["icm_forward_loss"] = float(forward_loss.item())
         info["icm_inverse_loss"] = float(inverse_loss.item())
 
         info["noise_score"] = noise_score
         info["noise_reward_scale"] = noise_reward_scale
         info["noise_hybrid_reward"] = noise_hybrid_reward
+
+        info["key2_progress_reward"] = key2_progress_reward
+        info["scaled_key2_reward"] = scaled_key2_reward
+        info["key2_completion_bonus"] = key2_completion_bonus
+        info["door2_reach_bonus"] = door2_reach_bonus
 
         self.episode_return += total_reward
         self.episode_intrinsic_reward += total_intrinsic_reward
@@ -522,8 +585,8 @@ class MetricsWrapper(gym.Wrapper):
 
         self.episode_prediction_errors.append(prediction_error)
         self.episode_learning_progress.append(learning_progress)
-        self.episode_fast_errors.append(float(self.fast_pred_error))
-        self.episode_slow_errors.append(float(self.slow_pred_error))
+        self.episode_fast_errors.append(float(state_fast_error))
+        self.episode_slow_errors.append(float(state_slow_error))
         self.episode_intrinsic_scales.append(self.intrinsic_reward_scale)
         self.episode_noise_scores.append(noise_score)
         self.episode_noise_penalties.append(noise_reward_scale)
