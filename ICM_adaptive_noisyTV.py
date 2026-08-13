@@ -32,6 +32,17 @@ class IntrinsicAnnealingCallback(BaseCallback):
         self.training_env.envs[0].intrinsic_reward_scale = scale
         return True
 
+class EntropyAnnealingCallback(BaseCallback):
+    def __init__(self, total_timesteps, start=0.02, end=0.003):
+        super().__init__()
+        self.total_timesteps = total_timesteps
+        self.start = start
+        self.end = end
+    
+    def _on_step(self):
+        fraction = min(self.num_timesteps / self.total_timesteps, 1.0)
+        self.model.ent_coef = self.start + fraction * (self.end - self.start)
+        return True
 
 class MetricsCallback(BaseCallback):
     def __init__(self):
@@ -65,6 +76,8 @@ class MetricsCallback(BaseCallback):
                         "mean_intrinsic_scale": [],
                         "mean_noise_score": [],
                         "mean_noise_reward_scale": [],
+                        "after_key1_action_counts": [],
+                        "facing_door1_action_counts": [],
                         }
 
     def _on_step(self):
@@ -165,16 +178,18 @@ class MetricsWrapper(gym.Wrapper):
         self.base_door1_reward_scale = 0.005
         self.door1_completion_bonus = 0.05
         self.door1_facing_bonus = 0.03
-        self.base_door2_reward_scale = 0.005
+        self.base_door2_reward_scale = 0.0075
         self.door2_facing_bonus = 0.03
         self.door2_completion_bonus = 0.05
 
         self.base_key2_reward_scale = 0.005
         self.key2_reward_scale = self.base_key2_reward_scale
         self.key2_completion_bonus = 0.05
-        self.base_entry_reward_scale = 0.0015
+        self.base_entry_reward_scale = 0.005
         self.base_goal_reward_scale = 0.0015
-        self.final_room_entry_bonus = 0.02
+        self.final_room_entry_bonus = 0.05
+        self.final_room_exit_penalty = 0.08
+        #self.final_room_curiosity_scale = 0.2
 
         self.door1_reward_scale = self.base_door1_reward_scale
         self.door2_reward_scale = self.base_door2_reward_scale
@@ -202,6 +217,9 @@ class MetricsWrapper(gym.Wrapper):
         self.state_slow_error = {}
         self.state_visit_counts = {}
         self.noise_min_visits = 5
+        self.total_after_key1_action_counts = np.zeros(self.action_space.n, dtype=np.int32)
+        self.total_facing_door1_action_counts = np.zeros(self.action_space.n, dtype=np.int32)
+
 
         self.reset_episode_metrics()
     
@@ -275,7 +293,8 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_intrinsic_scales = []
         self.episode_noise_scores = []
         self.episode_noise_penalties = []
-
+        self.episode_after_key1_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_facing_door1_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -391,14 +410,33 @@ class MetricsWrapper(gym.Wrapper):
         door1_was_faced = self.ep_door1_faced_with_key
         key2_was_reached = self.ep_key2
         door2_was_faced = self.ep_door2_faced_with_key
+        if self.ep_key1 and not self.ep_door1:
+            self.total_after_key1_action_counts[int(action)] += 1
+            self.episode_after_key1_action_counts[int(action)] += 1
 
+        carrying_key1 = self.check_if_carrying_key1()
 
+        front_x, front_y = self.unwrapped.front_pos
+
+        currently_facing_door1 = (
+            carrying_key1
+            and int(front_x) == int(self.unwrapped.wall1)
+            and int(front_y) == int(self.unwrapped.door1_pos)
+            and not self.ep_door1
+        )
+
+        if currently_facing_door1:
+            self.total_facing_door1_action_counts[int(action)] += 1
+            self.episode_facing_door1_action_counts[int(action)] += 1
+        
+        correct_door1_toggle = (currently_facing_door1 and int(action) == int(self.unwrapped.actions.toggle))
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.update_subgoal_metrics()
 
         door1_just_opened = (not door1_was_open and self.ep_door1)
         door1_completion_bonus = (self.door1_completion_bonus if door1_just_opened else 0.0)
         door1_just_faced = (not door1_was_faced and self.ep_door1_faced_with_key)
+        door1_toggle_bonus = (0.03 if correct_door1_toggle else 0.0)
         door1_facing_bonus = (self.door1_facing_bonus if door1_just_faced else 0.0)
         key2_just_reached = (not key2_was_reached and self.ep_key2)
         key2_completion_bonus = (self.key2_completion_bonus if key2_just_reached else 0.0)
@@ -416,8 +454,11 @@ class MetricsWrapper(gym.Wrapper):
         final_room_entry_bonus = (self.final_room_entry_bonus if final_room_just_entered else 0.0)
 
         x, y = self.unwrapped.agent_pos
+        exited_final_room_was = self.exited_final_room
         if self.ep_final_room_entered and int(x) <= int(self.unwrapped.wall2):
             self.exited_final_room = True
+        exited_final_room_just = (not exited_final_room_was and self.exited_final_room)
+        final_room_exit_penalty = (self.final_room_exit_penalty if exited_final_room_just else 0.0)
 
         self.episode_trajectory.append((int(x), int(y)))
         self.visit_heatmap[y, x] += 1
@@ -527,6 +568,7 @@ class MetricsWrapper(gym.Wrapper):
         noise_reward_scale = (self.minimum_noise_scale + (1.0 - self.minimum_noise_scale) * noise_score)
         noise_hybrid_reward = hybrid_reward * noise_reward_scale
 
+        #curiosity_dampening = (self.final_room_curiosity_scale if self.ep_final_room_entered else 1.0)
         intrinsic_reward = noise_hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
@@ -535,8 +577,8 @@ class MetricsWrapper(gym.Wrapper):
         scaled_goal_reward = (self.goal_reward_scale * goal_progress_reward)
 
         curiousity_reward = float(np.clip(intrinsic_reward, 0.0, 0.10))
-        shaping_reward = (scaled_door1_reward + door1_facing_bonus + door1_completion_bonus + scaled_key2_reward + key2_completion_bonus + scaled_door2_reward + door2_facing_bonus + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
-        total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.03, 0.15))
+        shaping_reward = (scaled_door1_reward + door1_facing_bonus + door1_toggle_bonus + door1_completion_bonus + scaled_key2_reward + key2_completion_bonus + scaled_door2_reward + door2_facing_bonus + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus - final_room_exit_penalty)
+        total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.08, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
 
@@ -557,6 +599,7 @@ class MetricsWrapper(gym.Wrapper):
         info["goal_progress_reward"] = goal_progress_reward
         info["scaled_goal_reward"] = scaled_goal_reward
         info["final_room_entry_bonus"] = final_room_entry_bonus
+        info["final_room_exit_penalty"] = final_room_exit_penalty
         info["final_room_entered"] = int(self.ep_final_room_entered)
 
         info["prediction_error"] = prediction_error
@@ -576,6 +619,9 @@ class MetricsWrapper(gym.Wrapper):
         info["key2_progress_reward"] = key2_progress_reward
         info["scaled_key2_reward"] = scaled_key2_reward
         info["key2_completion_bonus"] = key2_completion_bonus
+
+        #info["curiosity_dampening"] = curiosity_dampening
+
 
         self.episode_return += total_reward
         self.episode_intrinsic_reward += total_intrinsic_reward
@@ -635,7 +681,9 @@ class MetricsWrapper(gym.Wrapper):
                 "mean_intrinsic_scale": (float(np.mean(self.episode_intrinsic_scales)) if self.episode_intrinsic_scales else 1.0),
                 "mean_noise_score":(float(np.mean(self.episode_noise_scores)) if self.episode_noise_scores else 0.0),
                 "mean_noise_reward_scale":(float(np.mean(self.episode_noise_penalties)) if self.episode_noise_penalties else 1.0),
-
+                "after_key1_action_counts": self.episode_after_key1_action_counts.copy(),
+                "facing_door1_action_counts":self.episode_facing_door1_action_counts.copy(),
+                
     })
 
 
@@ -687,30 +735,32 @@ class MetricsWrapper(gym.Wrapper):
             if len(history) >= 20:
                 success_rates[stage] = float(np.mean(history))
         
+        self.door1_reward_scale = self.base_door1_reward_scale
+        self.key2_reward_scale = self.base_key2_reward_scale
+        self.door2_reward_scale = self.base_door2_reward_scale
+        self.entry_reward_scale = self.base_entry_reward_scale
+        self.goal_reward_scale = self.base_goal_reward_scale 
+        
         if not success_rates:
             self.current_bottleneck = None
             return
         if all(rate>=0.95 for rate in success_rates.values()):
             self.current_bottleneck = None
-        else:
-            self.current_bottleneck = min(success_rates, key=success_rates.get)
-        self.door1_reward_scale = self.base_door1_reward_scale
-        self.key2_reward_scale = self.base_key2_reward_scale
-        self.door2_reward_scale = self.base_door2_reward_scale
-        self.entry_reward_scale = self.base_entry_reward_scale
-        self.goal_reward_scale = self.base_goal_reward_scale
+            return
+        self.current_bottleneck = min(success_rates, key=success_rates.get)
+        rate = success_rates[self.current_bottleneck]
 
 
-        if "door1" in success_rates:
-            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, success_rates["door1"], self.bottleneck_scale)
-        if "key2" in success_rates:
-            self.key2_reward_scale = self.adaptive_bottleneck_scale(self.base_key2_reward_scale, success_rates["key2"], self.bottleneck_scale)
-        if "door2" in success_rates:
-            self.door2_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, success_rates["door2"], self.bottleneck_scale)
-        if "final_room" in success_rates:
-            self.entry_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, success_rates["final_room"], self.bottleneck_scale)
-        if "goal" in success_rates:
-            self.goal_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, success_rates["goal"], self.bottleneck_scale)
+        if self.current_bottleneck == "door1":
+            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, rate, self.bottleneck_scale)
+        elif self.current_bottleneck == "key2":
+            self.key2_reward_scale = self.adaptive_bottleneck_scale(self.base_key2_reward_scale, rate, self.bottleneck_scale)
+        elif self.current_bottleneck == "door2":
+            self.door2_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, rate, self.bottleneck_scale)
+        elif self.current_bottleneck == "final_room":
+            self.entry_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, rate, self.bottleneck_scale)
+        elif self.current_bottleneck == "goal":
+            self.goal_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, rate, self.bottleneck_scale)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -832,10 +882,11 @@ for seed in seeds:
     )
 
     callback = MetricsCallback()
-    annealing_callback = IntrinsicAnnealingCallback(total_timesteps=500_000, start=1.0, end=0.15)
+    total_timesteps = 500_000
+    annealing_callback = IntrinsicAnnealingCallback(total_timesteps=total_timesteps, start=1.0, end=0.15)
+    #entropy_callback = EntropyAnnealingCallback(total_timesteps=total_timesteps, start=0.02, end=0.003)
 
-
-    model.learn(total_timesteps=500_000,callback=CallbackList([annealing_callback, callback]))
+    model.learn(total_timesteps=total_timesteps,callback=CallbackList([annealing_callback, callback]))
 
     env = vec_env.envs[0]
     episodes = len(callback.history["success"])
@@ -997,6 +1048,7 @@ for seed in seeds:
             if 1 in callback.history["success"]
             else np.nan
         ),
+        
     }
 
     all_seed_results.append(seed_result)
@@ -1083,7 +1135,9 @@ for seed in seeds:
         print("Mean noise reward scale:",np.mean(callback.history["mean_noise_reward_scale"]))
         print("Noise score over last 100 episodes:",mean_last(callback.history["mean_noise_score"], 100))
         print("Noise reward scale over last 100 episodes:",mean_last(callback.history["mean_noise_reward_scale"], 100))
-
+        print("P(reach Door1 | Key1) last 100:",conditional_last(callback.history["door1_with_key"],callback.history["key1"],100) * 100,"%")
+        print("P(face Door1 | reached) last 100:",conditional_last(callback.history["door1_faced_with_key"],callback.history["door1_with_key"],100) * 100,"%")
+        print("P(open Door1 | faced) last 100:",conditional_last(callback.history["door1"],callback.history["door1_faced_with_key"],100) * 100,"%")
         entry_directions = np.asarray(callback.history["final_room_entry_direction"])
         entry_goal_distances = np.asarray(callback.history["distance_to_goal_at_entry"])
         entry_steps_remaining = np.asarray(callback.history["steps_remaining_at_entry"])
@@ -1126,9 +1180,53 @@ for seed in seeds:
         else:
             print("Average steps from final-room entry to goal:","No successful entries")
 
-    else:
-        print("No episodes completed.")
-    
+        action_names = [
+        "left",
+        "right",
+        "forward",
+        "pickup",
+        "drop",
+        "toggle",
+        "done"
+    ]
+
+        print("\n--- Action Diagnostics ---")
+
+        print("After Key1:")
+        for i, name in enumerate(action_names):
+            print(
+                f"{name}: "
+                f"{env.total_after_key1_action_counts[i]}"
+            )
+
+        print("\nWhile currently facing Door1 with Key1:")
+        for i, name in enumerate(action_names):
+            print(
+                f"{name}: "
+                f"{env.total_facing_door1_action_counts[i]}"
+            )
+        
+        last100_after_key1 = np.sum(
+            callback.history["after_key1_action_counts"][-100:],
+            axis=0
+        )
+
+        last100_facing_door1 = np.sum(
+            callback.history["facing_door1_action_counts"][-100:],
+            axis=0
+        )
+
+        print("\n--- LAST 100 ACTION DIAGNOSTICS ---")
+
+        print("After Key1:")
+        for i, name in enumerate(action_names):
+            print(f"{name}: {last100_after_key1[i]}")
+
+        print("\nWhile currently facing Door1 with Key1:")
+        for i, name in enumerate(action_names):
+            print(f"{name}: {last100_facing_door1[i]}")
+
+        
 
     direction_names = {
     0: "right",
