@@ -18,7 +18,7 @@ import torch
 class MetricsCallback(BaseCallback):
     def __init__(self):
         super().__init__()
-        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": [], "key1": [], "door1": [], "key2": [], "door2": [], "door1_with_key": []}
+        self.history = {"return": [],"success": [],"intrinsic_reward": [],"state_coverage": [], "extrinsic_return": [], "key1": [], "door1": [], "key2": [], "door2": [], "door1_with_key": [],}
 
     def _on_step(self):
         env = self.training_env.envs[0]
