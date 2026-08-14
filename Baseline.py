@@ -193,142 +193,155 @@ def make_env():
 
     return env
 
-vec_env = DummyVecEnv([make_env])
-vec_env.seed(42)
-
+seeds = [42, 123, 456]
+total_timesteps = 500_000
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-model = PPO(
-    "MlpPolicy",
-    vec_env,
-    learning_rate=2.5e-4,
-    n_steps=1024,
-    batch_size=128,
-    n_epochs=10,
-    gamma=0.995,
-    gae_lambda=0.95,
-    clip_range=0.2,
-    ent_coef=0.02,
-    vf_coef=0.5,
-    max_grad_norm=0.5,
-    policy_kwargs={
-        "net_arch": {
-            "pi": [256, 256],
-            "vf": [256, 256]
-        }
-    },
-    verbose=1,
-    seed=42
-)
+for seed in seeds:
+    print("SEED NUMBER: ", seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-callback = MetricsCallback()
-
-def mean_last(values, window=100):
-    if len(values) == 0:
-        return 0.0
-
-    window = min(window, len(values))
-    return float(np.mean(values[-window:]))
-
-model.learn(total_timesteps=500_000, callback=callback)
-file_name = datetime.now().strftime("run_%Y%m%d_%H%M%S")
-
-save_dir = os.path.join("results", file_name)
-os.makedirs(save_dir, exist_ok=True)
-
-returns = callback.history["return"]
-successes = callback.history["success"]
-intrinsic_rewards = callback.history["intrinsic_reward"]
-coverages = callback.history["state_coverage"]
-
-print("Episodes logged:", len(successes))
-print("Average return:", np.mean(returns))
-print("Success rate:", np.mean(successes) * 100, "%")
-print("Average intrinsic reward:", np.mean(intrinsic_rewards))
-print("Average state coverage:", np.mean(coverages))
-print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"]))
-print("*******************")
-print("Success rate over last 100 episodes: ", mean_last(successes, 100) * 100, "%")
-print("Average coverage over last 100 episodes: ", mean_last(coverages, 100))
-print("Average extrinsic return over last 100 episodes: ", mean_last(callback.history["extrinsic_return"], 100))
-print("*******************")
-
-if 1 in successes:
-    print("Time to first success:", successes.index(1) + 1, "episodes")
-else:
-    print("Time to first success: not achieved")
+    vec_env = DummyVecEnv([make_env])
+    vec_env.seed(seed)
 
 
-env = vec_env.envs[0]
-episodes = len(successes)
-
-if episodes > 0:
-    print("Picked up key1:", 100 * env.key1_reached / episodes, "%")
-    print("Opened door1:", 100 * env.door1_opened / episodes, "%")
-    print("Picked up key2:", 100 * env.key2_reached / episodes, "%")
-    print("Opened door2:", 100 * env.door2_opened / episodes, "%")
-    print("Reached door1 with key1: ", 100 * env.door1_reached_with_key / episodes, "%")
-else:
-    print("No episodes completed.")
-
-trajectory = env.all_trajectories[-1]
-def rolling_mean(values, window=100):
-    values = np.asarray(values, dtype=np.float32)
-
-    if len(values) < window:
-        return np.array([])
-
-    kernel = np.ones(window) / window
-
-    return np.convolve(
-        values,
-        kernel,
-        mode="valid"
+    model = PPO(
+        "MlpPolicy",
+        vec_env,
+        learning_rate=2.5e-4,
+        n_steps=1024,
+        batch_size=128,
+        n_epochs=10,
+        gamma=0.995,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.02,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        policy_kwargs={
+            "net_arch": {
+                "pi": [256, 256],
+                "vf": [256, 256]
+            }
+        },
+        verbose=1,
+        seed=seed
     )
 
-xs = [p[0] for p in trajectory]
-ys = [p[1] for p in trajectory]
+    callback = MetricsCallback()
+    model.learn(total_timesteps=total_timesteps, callback=callback)
+    file_name = datetime.now().strftime(f"baseline_seed_{seed}_%Y%m%d_%H_%M_%S")
 
-plt.figure(figsize=(6, 6))
-plt.plot(xs, ys, marker="o")
-plt.gca().invert_yaxis()
-plt.title("Agent Trajectory")
-plt.xlabel("x position")
-plt.ylabel("y position")
-plt.grid(True)
-plt.savefig(
-    os.path.join(save_dir, "trajectory_graph.png"),
-    dpi=300,
-    bbox_inches="tight"
-)
-plt.show()
+    def mean_last(values, window=100):
+        if len(values) == 0:
+            return 0.0
 
-plt.figure(figsize=(6, 6))
-plt.imshow(env.visit_heatmap)
-plt.colorbar(label="Visit count")
-plt.title("Visited State Heatmap")
-plt.xlabel("x position")
-plt.ylabel("y position")
-plt.savefig(
-    os.path.join(save_dir, "heatmap_chart.png"),
-    dpi=300,
-    bbox_inches="tight"
-)
-plt.show()
+        window = min(window, len(values))
+        return float(np.mean(values[-window:]))
 
-with open(os.path.join(save_dir, "run_trajectories.pkl"), "wb") as f:
-    pickle.dump(env.all_trajectories, f)
-np.save(os.path.join(save_dir, "visit_heatmap.npy"),env.visit_heatmap)
-metrics = {
-    "episodes_logged": len(successes),
-    "success_rate": np.mean(successes),
-    "avg_return": np.mean(returns),
-    "avg_intrinsic_reward": np.mean(intrinsic_rewards),
-    "avg_state_coverage": np.mean(coverages),
-    "avg_extrinsic_return": np.mean(callback.history["extrinsic_return"]),
-    "time_to_first_success":
-        successes.index(1) + 1 if 1 in successes else None
-}
 
-with open(os.path.join(save_dir, "metrics.pkl"), "wb") as f:
-    pickle.dump(metrics, f)
+    save_dir = os.path.join("results", file_name)
+    os.makedirs(save_dir, exist_ok=True)
+
+    returns = callback.history["return"]
+    successes = callback.history["success"]
+    intrinsic_rewards = callback.history["intrinsic_reward"]
+    coverages = callback.history["state_coverage"]
+
+    print("Episodes logged:", len(successes))
+    print("Average return:", np.mean(returns))
+    print("Success rate:", np.mean(successes) * 100, "%")
+    print("Average intrinsic reward:", np.mean(intrinsic_rewards))
+    print("Average state coverage:", np.mean(coverages))
+    print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"]))
+    print("*******************")
+    print("Success rate over last 100 episodes: ", mean_last(successes, 100) * 100, "%")
+    print("Average coverage over last 100 episodes: ", mean_last(coverages, 100))
+    print("Average extrinsic return over last 100 episodes: ", mean_last(callback.history["extrinsic_return"], 100))
+    print("*******************")
+
+    if 1 in successes:
+        print("Time to first success:", successes.index(1) + 1, "episodes")
+    else:
+        print("Time to first success: not achieved")
+
+
+    env = vec_env.envs[0]
+    episodes = len(successes)
+
+    if episodes > 0:
+        print("Picked up key1:", 100 * env.key1_reached / episodes, "%")
+        print("Opened door1:", 100 * env.door1_opened / episodes, "%")
+        print("Picked up key2:", 100 * env.key2_reached / episodes, "%")
+        print("Opened door2:", 100 * env.door2_opened / episodes, "%")
+        print("Reached door1 with key1: ", 100 * env.door1_reached_with_key / episodes, "%")
+    else:
+        print("No episodes completed.")
+
+    trajectory = env.all_trajectories[-1]
+    def rolling_mean(values, window=100):
+        values = np.asarray(values, dtype=np.float32)
+
+        if len(values) < window:
+            return np.array([])
+
+        kernel = np.ones(window) / window
+
+        return np.convolve(
+            values,
+            kernel,
+            mode="valid"
+        )
+
+    xs = [p[0] for p in trajectory]
+    ys = [p[1] for p in trajectory]
+
+    plt.figure(figsize=(6, 6))
+    plt.plot(xs, ys, marker="o")
+    plt.gca().invert_yaxis()
+    plt.title("Agent Trajectory")
+    plt.xlabel("x position")
+    plt.ylabel("y position")
+    plt.grid(True)
+    plt.savefig(
+        os.path.join(save_dir, "trajectory_graph.png"),
+        dpi=300,
+        bbox_inches="tight"
+    )
+    plt.show()
+
+    plt.figure(figsize=(6, 6))
+    plt.imshow(env.visit_heatmap)
+    plt.colorbar(label="Visit count")
+    plt.title("Visited State Heatmap")
+    plt.xlabel("x position")
+    plt.ylabel("y position")
+    plt.savefig(
+        os.path.join(save_dir, "heatmap_chart.png"),
+        dpi=300,
+        bbox_inches="tight"
+    )
+    plt.show()
+
+    with open(os.path.join(save_dir, "run_trajectories.pkl"), "wb") as f:
+        pickle.dump(env.all_trajectories, f)
+    np.save(os.path.join(save_dir, "visit_heatmap.npy"),env.visit_heatmap)
+    metrics = {
+        "seed": seed,
+        "episodes_logged": len(successes),
+        "success_rate": np.mean(successes),
+        "avg_return": np.mean(returns),
+        "avg_intrinsic_reward": np.mean(intrinsic_rewards),
+        "avg_state_coverage": np.mean(coverages),
+        "avg_extrinsic_return": np.mean(callback.history["extrinsic_return"]),
+        "time_to_first_success":
+            successes.index(1) + 1 if 1 in successes else None
+    }
+
+    with open(os.path.join(save_dir, "metrics.pkl"), "wb") as f:
+        pickle.dump(metrics, f)
+    vec_env.close()
+    plt.close("all")
