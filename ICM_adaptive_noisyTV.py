@@ -78,6 +78,18 @@ class MetricsCallback(BaseCallback):
                         "mean_noise_reward_scale": [],
                         "after_key1_action_counts": [],
                         "facing_door1_action_counts": [],
+                        "key2_reached_position": [],
+                        "after_door1_action_counts": [],
+                        "facing_key2_action_counts": [],
+                        "min_key2_distance": [],
+                        "min_final_room_distance": [],
+                        "after_door2_action_counts": [],
+                        "facing_open_door2_action_counts": [],
+                        "on_open_door2_action_counts": [],
+                        "min_goal_distance": [],
+                        "inside_final_room_action_counts": [],
+                        "facing_goal_action_counts": [],
+                        "on_door2_facing_final_room_action_counts": [],
                         }
 
     def _on_step(self):
@@ -182,12 +194,14 @@ class MetricsWrapper(gym.Wrapper):
         self.door2_facing_bonus = 0.03
         self.door2_completion_bonus = 0.05
 
-        self.base_key2_reward_scale = 0.005
+        self.base_key2_reward_scale = 0.01
         self.key2_reward_scale = self.base_key2_reward_scale
         self.key2_completion_bonus = 0.05
+        self.key2_position_bonus = 0.03
         self.base_entry_reward_scale = 0.005
         self.base_goal_reward_scale = 0.0015
         self.final_room_entry_bonus = 0.05
+        self.final_room_forward_bonus = 0.075
         self.final_room_exit_penalty = 0.08
         #self.final_room_curiosity_scale = 0.2
 
@@ -219,8 +233,20 @@ class MetricsWrapper(gym.Wrapper):
         self.noise_min_visits = 5
         self.total_after_key1_action_counts = np.zeros(self.action_space.n, dtype=np.int32)
         self.total_facing_door1_action_counts = np.zeros(self.action_space.n, dtype=np.int32)
+        self.key2_reached_position = 0
+        self.total_after_door1_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.total_facing_key2_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.total_after_door2_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.total_facing_open_door2_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.total_on_open_door2_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.total_inside_final_room_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.total_facing_goal_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.total_on_door2_facing_final_room_action_counts = np.zeros(self.action_space.n, dtype=np.int32)
 
 
+        self.goal_facing_bonus = 0.03
+        self.goal_forward_bonus = 0.05
+        
         self.reset_episode_metrics()
     
     def calculate_learning_progress(self, prediction_error):
@@ -268,13 +294,15 @@ class MetricsWrapper(gym.Wrapper):
         self.ep_door1_reached_with_key = False
         self.previous_door1_distance = None
         self.ep_door1_faced_with_key = False
+        self.ep_key2_reached_position = False
 
         self.ep_door2_reached_with_key = False
         self.previous_door2_distance = None
         self.ep_door2_faced_with_key = False
-
         self.ep_final_room_entered = False
         self.ep_goal_reached = False
+        self.ep_goal_faced = False
+
         self.previous_entry_distance = None
         self.previous_goal_distance = None
         self.previous_key2_distance = None
@@ -293,9 +321,24 @@ class MetricsWrapper(gym.Wrapper):
         self.episode_intrinsic_scales = []
         self.episode_noise_scores = []
         self.episode_noise_penalties = []
+
         self.episode_after_key1_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
         self.episode_facing_door1_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_after_door1_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_facing_key2_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_after_door2_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_facing_open_door2_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_on_open_door2_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_on_door2_facing_final_room_action_counts = np.zeros(self.action_space.n, dtype=np.int32)
 
+        self.episode_min_key2_distance = None
+        self.episode_min_final_room_distance = None
+
+        self.episode_inside_final_room_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_facing_goal_action_counts = np.zeros(self.action_space.n,dtype=np.int32)
+        self.episode_min_goal_distance = None
+    
+    
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         self.previous_observations = self.normalise_observations(obs)
@@ -318,6 +361,16 @@ class MetricsWrapper(gym.Wrapper):
         
         return int(x), int(y), int(self.unwrapped.agent_dir), carried_object, bool(self.ep_door1), bool(self.ep_door2)
     
+    def noise_visit_key(self):
+        x, y = self.unwrapped.agent_pos
+
+        return (
+            int(x),
+            int(y),
+            bool(self.ep_door1),
+            bool(self.ep_door2)
+        )
+    
     def check_if_carrying_key1(self):
         carrying = self.unwrapped.carrying
         return (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour)
@@ -339,6 +392,11 @@ class MetricsWrapper(gym.Wrapper):
         key2_x, key2_y = self.unwrapped.key2_pos
         return (abs(int(agent_x) - int(key2_x)) + abs(int(agent_y) - int(key2_y)))
 
+    def check_if_facing_key2(self):
+        front_x, front_y = self.unwrapped.front_pos
+        key2_x, key2_y = self.unwrapped.key2_pos
+        front_obj = self.unwrapped.grid.get(int(front_x), int(front_y))
+        return (int(front_x) == int(key2_x) and int(front_y) == int(key2_y) and front_obj is not None and front_obj.type == "key" and front_obj.color == self.unwrapped.key2_colour)
     
     def distance_to_door2(self):
         agent_x, agent_y = self.unwrapped.agent_pos
@@ -370,6 +428,11 @@ class MetricsWrapper(gym.Wrapper):
         
         if (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key2_colour):
             self.ep_key2 = True
+        
+        if self.ep_door1 and not self.ep_key2:
+            key2_distance = self.distance_to_key2()
+            if key2_distance == 1:
+                self.ep_key2_reached_position = True
         
         door2 = grid.get(self.unwrapped.wall2, self.unwrapped.door2_pos)
         if door2 is not None and door2.is_open:
@@ -409,6 +472,7 @@ class MetricsWrapper(gym.Wrapper):
         final_room_was_entered = self.ep_final_room_entered
         door1_was_faced = self.ep_door1_faced_with_key
         key2_was_reached = self.ep_key2
+        key2_position_reached = self.ep_key2_reached_position
         door2_was_faced = self.ep_door2_faced_with_key
         if self.ep_key1 and not self.ep_door1:
             self.total_after_key1_action_counts[int(action)] += 1
@@ -430,7 +494,76 @@ class MetricsWrapper(gym.Wrapper):
             self.episode_facing_door1_action_counts[int(action)] += 1
         
         correct_door1_toggle = (currently_facing_door1 and int(action) == int(self.unwrapped.actions.toggle))
+
+
+        if self.ep_door1 and not self.ep_key2:
+            self.total_after_door1_action_counts[int(action)] += 1
+            self.episode_after_door1_action_counts[int(action)] += 1
+
+
+        currently_facing_key2 = (
+            self.ep_door1
+            and not self.ep_key2
+            and self.check_if_facing_key2()
+        )
+
+        if currently_facing_key2:
+            self.total_facing_key2_action_counts[int(action)] += 1
+            self.episode_facing_key2_action_counts[int(action)] += 1
+
+        if self.ep_door2 and not self.ep_final_room_entered:
+            self.total_after_door2_action_counts[int(action)]+=1
+            self.episode_after_door2_action_counts[int(action)]+=1
+        
+        front_x, front_y = self.unwrapped.front_pos
+        door2_obj = self.unwrapped.grid.get(int(self.unwrapped.wall2), int(self.unwrapped.door2_pos))
+
+        currently_facing_open_door2 = (self.ep_door2 and not self.ep_final_room_entered and int(front_x) == int(self.unwrapped.wall2) and int(front_y) == int(self.unwrapped.door2_pos) and door2_obj is not None and door2_obj.is_open)
+        correct_door2_forward = (currently_facing_open_door2 and int(action) == int(self.unwrapped.actions.forward))
+
+        if currently_facing_open_door2:
+            self.total_facing_open_door2_action_counts[int(action)] += 1
+            self.episode_facing_open_door2_action_counts[int(action)] += 1
+
+        agent_x, agent_y = self.unwrapped.agent_pos
+        currently_on_open_door2 = (self.ep_door2 and not self.ep_final_room_entered and int(agent_x) == int(self.unwrapped.wall2) and int(agent_y) == int(self.unwrapped.door2_pos) and door2_obj is not None and door2_obj.is_open)
+        if currently_on_open_door2:
+            self.total_on_open_door2_action_counts[int(action)]+=1
+            self.episode_on_open_door2_action_counts[int(action)]+=1
+        
+        if self.ep_final_room_entered and not self.ep_goal_reached:
+            self.total_inside_final_room_action_counts[int(action)] +=1
+            self.episode_inside_final_room_action_counts[int(action)] +=1
+        
+        front_x, front_y = self.unwrapped.front_pos
+        goal_x, goal_y = self.unwrapped.goal_pos
+        currently_facing_goal = (self.ep_final_room_entered and not self.ep_goal_reached and int(front_x) == int(goal_x) and int(front_y) == int(goal_y))
+
+        if currently_facing_goal:
+            self.total_facing_goal_action_counts[int(action)]+=1
+            self.episode_facing_goal_action_counts[int(action)]+=1
+        
+        correct_forward_goal = (currently_facing_goal and int(action) == int(self.unwrapped.actions.forward))
+
+        currently_on_door2_facing_final_room = (self.ep_door2
+            and not self.ep_final_room_entered
+            and int(agent_x) == int(self.unwrapped.wall2)
+            and int(agent_y) == int(self.unwrapped.door2_pos)
+            and int(front_x) == int(self.unwrapped.wall2) + 1
+            and int(front_y) == int(self.unwrapped.door2_pos))
+
+        correct_final_room_forward = (currently_on_door2_facing_final_room and int(action) == int(self.unwrapped.actions.forward))
+        if currently_on_door2_facing_final_room:
+            self.total_on_door2_facing_final_room_action_counts[int(action)] +=1
+            self.episode_on_door2_facing_final_room_action_counts[int(action)]+=1
+        
+        goal_was_faced = self.ep_goal_faced
+        if currently_facing_goal:
+            self.ep_goal_faced = True
+
+
         obs, reward, terminated, truncated, info = self.env.step(action)
+
         self.update_subgoal_metrics()
 
         door1_just_opened = (not door1_was_open and self.ep_door1)
@@ -439,11 +572,20 @@ class MetricsWrapper(gym.Wrapper):
         door1_toggle_bonus = (0.03 if correct_door1_toggle else 0.0)
         door1_facing_bonus = (self.door1_facing_bonus if door1_just_faced else 0.0)
         key2_just_reached = (not key2_was_reached and self.ep_key2)
+        key2_position_just_reached = (not key2_position_reached and self.ep_key2_reached_position)
+        key2_position_bonus = (self.key2_position_bonus if key2_position_just_reached else 0.0)
         key2_completion_bonus = (self.key2_completion_bonus if key2_just_reached else 0.0)
         door2_just_opened = (not door2_was_open and self.ep_door2)
         door2_completion_bonus = (self.door2_completion_bonus if door2_just_opened else 0.0)
         door2_just_faced = (not door2_was_faced and self.ep_door2_faced_with_key)
         door2_facing_bonus = (self.door2_facing_bonus if door2_just_faced else 0.0)
+        door2_forward_bonus = (0.05 if correct_door2_forward else 0.0)
+        final_room_forward_bonus = (self.final_room_forward_bonus if correct_final_room_forward else 0.0)
+        goal_just_faced = (not goal_was_faced and self.ep_goal_faced)
+        goal_facing_bonus = (self.goal_facing_bonus if goal_just_faced else 0.0)
+        goal_forward_bonus = (self.goal_forward_bonus if correct_forward_goal else 0.0)
+
+
 
         final_room_just_entered = (not final_room_was_entered and self.ep_final_room_entered)
         if final_room_just_entered:
@@ -453,6 +595,7 @@ class MetricsWrapper(gym.Wrapper):
             self.step_entered_final_room = int(self.episode_steps + 1)
         final_room_entry_bonus = (self.final_room_entry_bonus if final_room_just_entered else 0.0)
 
+        
         x, y = self.unwrapped.agent_pos
         exited_final_room_was = self.exited_final_room
         if self.ep_final_room_entered and int(x) <= int(self.unwrapped.wall2):
@@ -483,9 +626,10 @@ class MetricsWrapper(gym.Wrapper):
         prediction_error = float(prediction_error_tensor.item())
         
         current_state = self.state_key()
-        self.state_visit_counts[current_state] = (
-        self.state_visit_counts.get(current_state, 0) + 1)
-        state_visits = self.state_visit_counts[current_state]
+        noise_state = self.noise_visit_key()
+        self.state_visit_counts[noise_state] = (
+        self.state_visit_counts.get(noise_state, 0) + 1)
+        state_visits = self.state_visit_counts[noise_state]
         learning_progress = self.calculate_state_learning_progress(current_state, prediction_error)
         state_fast_error = self.state_fast_error[current_state]
         state_slow_error = self.state_slow_error[current_state]
@@ -516,6 +660,10 @@ class MetricsWrapper(gym.Wrapper):
         key2_progress_reward = 0.0
         if self.ep_door1 and not self.ep_key2:
             current_distance = self.distance_to_key2()
+            if self.episode_min_key2_distance is None:
+                self.episode_min_key2_distance = current_distance
+            else:
+                self.episode_min_key2_distance = min(self.episode_min_key2_distance, current_distance)
             if self.previous_key2_distance is not None:
                 previous_potential = -float(self.previous_key2_distance)
                 current_potential = -float(current_distance)
@@ -529,6 +677,10 @@ class MetricsWrapper(gym.Wrapper):
 
         if self.ep_door2 and not self.ep_final_room_entered:
             current_entry_distance = (self.distance_to_final_room())
+            if self.episode_min_final_room_distance is None:
+                self.episode_min_final_room_distance = current_entry_distance
+            else:
+                self.episode_min_final_room_distance = min(self.episode_min_final_room_distance, current_entry_distance)
 
             if self.previous_entry_distance is not None:
                 previous_potential = -float(self.previous_entry_distance)
@@ -541,6 +693,10 @@ class MetricsWrapper(gym.Wrapper):
 
         elif self.ep_final_room_entered:
             current_goal_distance = (self.distance_to_goal())
+            if self.episode_min_goal_distance is None:
+                self.episode_min_goal_distance = current_goal_distance
+            else:
+                self.episode_min_goal_distance = min(self.episode_min_goal_distance, current_goal_distance)
 
             if self.previous_goal_distance is not None:
                 previous_potential = -float(self.previous_goal_distance)
@@ -558,10 +714,9 @@ class MetricsWrapper(gym.Wrapper):
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
         prediction_error_weight = 0.2
         learning_progress_weight = 0.8
-        if state_visits < self.noise_min_visits:
-            noise_score = 1.0
-        else:
-            noise_score = (scaled_learning_progress / (scaled_learning_progress + self.noise_prediction_error_weight * scaled_prediction_error + self.noise_epsilon))
+        raw_noise_score = (scaled_learning_progress / (scaled_learning_progress + self.noise_prediction_error_weight * scaled_prediction_error + self.noise_epsilon))
+        visit_confidence = min(1.0, state_visits / self.noise_min_visits)
+        noise_score = (visit_confidence * raw_noise_score + (1.0 - visit_confidence) * 0.5)
         noise_score = float(np.clip(noise_score,0.0,1.0))
 
         hybrid_reward = (prediction_error_weight * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
@@ -577,7 +732,7 @@ class MetricsWrapper(gym.Wrapper):
         scaled_goal_reward = (self.goal_reward_scale * goal_progress_reward)
 
         curiousity_reward = float(np.clip(intrinsic_reward, 0.0, 0.10))
-        shaping_reward = (scaled_door1_reward + door1_facing_bonus + door1_toggle_bonus + door1_completion_bonus + scaled_key2_reward + key2_completion_bonus + scaled_door2_reward + door2_facing_bonus + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus - final_room_exit_penalty)
+        shaping_reward = (scaled_door1_reward + door1_facing_bonus + door1_toggle_bonus + door1_completion_bonus + scaled_key2_reward + key2_position_bonus + key2_completion_bonus + scaled_door2_reward + door2_facing_bonus +  door2_forward_bonus + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus + final_room_forward_bonus +goal_forward_bonus + goal_facing_bonus - final_room_exit_penalty)
         total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.08, 0.15))
         extrinsic_reward = float(reward)
         total_reward = total_intrinsic_reward + extrinsic_reward
@@ -619,6 +774,10 @@ class MetricsWrapper(gym.Wrapper):
         info["key2_progress_reward"] = key2_progress_reward
         info["scaled_key2_reward"] = scaled_key2_reward
         info["key2_completion_bonus"] = key2_completion_bonus
+        info["final_room_forward_bonus"] = final_room_forward_bonus
+
+        info["goal_facing_bonus"] = goal_facing_bonus
+        info["goal_forward_bonus"] = goal_forward_bonus
 
         #info["curiosity_dampening"] = curiosity_dampening
 
@@ -683,7 +842,21 @@ class MetricsWrapper(gym.Wrapper):
                 "mean_noise_reward_scale":(float(np.mean(self.episode_noise_penalties)) if self.episode_noise_penalties else 1.0),
                 "after_key1_action_counts": self.episode_after_key1_action_counts.copy(),
                 "facing_door1_action_counts":self.episode_facing_door1_action_counts.copy(),
-                
+                "key2_reached_position": int(self.ep_key2_reached_position),
+                "after_door1_action_counts":self.episode_after_door1_action_counts.copy(),
+                "min_key2_distance": (int(self.episode_min_key2_distance) if self.episode_min_key2_distance is not None else -1),
+                "min_final_room_distance": (int(self.episode_min_final_room_distance) if self.episode_min_final_room_distance is not None else -1),
+                "facing_key2_action_counts":self.episode_facing_key2_action_counts.copy(),
+                "after_door2_action_counts": self.episode_after_door2_action_counts.copy(),
+                "facing_open_door2_action_counts": self.episode_facing_open_door2_action_counts.copy(),
+                "on_open_door2_action_counts": self.episode_on_open_door2_action_counts.copy(),
+                "min_goal_distance": (int(self.episode_min_goal_distance) if self.episode_min_goal_distance is not None else -1),
+                "inside_final_room_action_counts": self.episode_inside_final_room_action_counts.copy(),
+                "facing_goal_action_counts": self.episode_facing_goal_action_counts.copy(),
+                "on_door2_facing_final_room_action_counts":self.episode_on_door2_facing_final_room_action_counts.copy(),
+
+
+
     })
 
 
@@ -697,6 +870,7 @@ class MetricsWrapper(gym.Wrapper):
             self.door2_faced_with_key += int(self.ep_door2_faced_with_key)
             self.final_room_entered += int(self.ep_final_room_entered)
             self.goal_reached += int(self.ep_goal_reached)
+            self.key2_reached_position += int(self.ep_key2_reached_position)
 
             if self.ep_key1:
                 self.bottleneck_history["door1"].append(int(self.ep_door1))
@@ -739,15 +913,23 @@ class MetricsWrapper(gym.Wrapper):
         self.key2_reward_scale = self.base_key2_reward_scale
         self.door2_reward_scale = self.base_door2_reward_scale
         self.entry_reward_scale = self.base_entry_reward_scale
-        self.goal_reward_scale = self.base_goal_reward_scale 
-        
+        self.goal_reward_scale = self.base_goal_reward_scale
+
         if not success_rates:
             self.current_bottleneck = None
             return
-        if all(rate>=0.95 for rate in success_rates.values()):
-            self.current_bottleneck = None
+        stage_order = ["door1", "key2", "door2", "final_room", "goal"]
+        bottleneck_threshold = 0.80
+        self.current_bottleneck = None
+
+        for stage in stage_order:
+            if stage in success_rates and success_rates[stage] < bottleneck_threshold:
+                self.current_bottleneck = stage
+                break
+        
+        if self.current_bottleneck is None:
             return
-        self.current_bottleneck = min(success_rates, key=success_rates.get)
+        
         rate = success_rates[self.current_bottleneck]
 
 
@@ -823,7 +1005,7 @@ def conditional_last(numerator_values,denominator_values,window=100):
 
     return float(top / bottom)
 
-seeds = [42]
+seeds = [42, 123, 456]
 
 all_seed_results = []
 
@@ -882,7 +1064,7 @@ for seed in seeds:
     )
 
     callback = MetricsCallback()
-    total_timesteps = 500_000
+    total_timesteps = 1_000_000
     annealing_callback = IntrinsicAnnealingCallback(total_timesteps=total_timesteps, start=1.0, end=0.15)
     #entropy_callback = EntropyAnnealingCallback(total_timesteps=total_timesteps, start=0.02, end=0.003)
 
@@ -1138,6 +1320,8 @@ for seed in seeds:
         print("P(reach Door1 | Key1) last 100:",conditional_last(callback.history["door1_with_key"],callback.history["key1"],100) * 100,"%")
         print("P(face Door1 | reached) last 100:",conditional_last(callback.history["door1_faced_with_key"],callback.history["door1_with_key"],100) * 100,"%")
         print("P(open Door1 | faced) last 100:",conditional_last(callback.history["door1"],callback.history["door1_faced_with_key"],100) * 100,"%")
+        print("P(reach Key2 | Door1) last 100:",conditional_last(callback.history["key2_reached_position"],callback.history["door1"],100) * 100,"%")
+        print("P(pickup Key2 | reached Key2) last 100:", conditional_last(callback.history["key2"],callback.history["key2_reached_position"], 100) * 100,"%")
         entry_directions = np.asarray(callback.history["final_room_entry_direction"])
         entry_goal_distances = np.asarray(callback.history["distance_to_goal_at_entry"])
         entry_steps_remaining = np.asarray(callback.history["steps_remaining_at_entry"])
@@ -1225,6 +1409,127 @@ for seed in seeds:
         print("\nWhile currently facing Door1 with Key1:")
         for i, name in enumerate(action_names):
             print(f"{name}: {last100_facing_door1[i]}")
+        
+        last100_after_door1 = np.sum(
+    callback.history["after_door1_action_counts"][-100:],
+    axis=0
+)
+
+        last100_facing_key2 = np.sum(
+            callback.history["facing_key2_action_counts"][-100:],
+            axis=0
+        )
+
+        print("\n--- LAST 100 KEY2 ACTION DIAGNOSTICS ---")
+
+        print("After Door1 opens:")
+        for i, name in enumerate(action_names):
+            print(f"{name}: {last100_after_door1[i]}")
+
+        print("\nWhile currently facing Key2:")
+        for i, name in enumerate(action_names):
+            print(f"{name}: {last100_facing_key2[i]}")
+        print("Current Key2 reward scale:", env.key2_reward_scale)
+
+        last100_key2_distances = [
+            d for d in callback.history["min_key2_distance"][-100:]
+            if d >= 0
+        ]
+
+        if last100_key2_distances:
+            print(
+                "Average minimum Key2 distance over last 100 eligible episodes:",
+                np.mean(last100_key2_distances)
+            )
+        else:
+            print(
+                "Average minimum Key2 distance over last 100 eligible episodes:",
+                "No Door1-open episodes"
+            )
+        
+        last100_final_room_distances = [
+            d for d in callback.history["min_final_room_distance"][-100:]
+            if d >= 0
+        ]
+
+        if last100_final_room_distances:
+            print(
+                "Average minimum final-room distance over last 100 eligible episodes:",
+                np.mean(last100_final_room_distances)
+            )
+        
+        last100_after_door2 = np.sum(
+            callback.history["after_door2_action_counts"][-100:],
+            axis=0
+        )
+
+        last100_facing_open_door2 = np.sum(
+            callback.history["facing_open_door2_action_counts"][-100:],
+            axis=0
+        )
+
+        print("\n--- LAST 100 FINAL-ROOM ACTION DIAGNOSTICS ---")
+
+        print("After Door2 opens:")
+        for i, name in enumerate(action_names):
+            print(f"{name}: {last100_after_door2[i]}")
+
+        print("\nWhile facing OPEN Door2:")
+        for i, name in enumerate(action_names):
+            print(f"{name}: {last100_facing_open_door2[i]}")
+        
+        last100_on_open_door2 = np.sum(
+            callback.history["on_open_door2_action_counts"][-100:],
+            axis=0
+        )
+        print("\nWhile standing ON open Door2:")
+        for i, name in enumerate(action_names):
+            print(f"{name}: {last100_on_open_door2[i]}")
+        
+        last100_goal_distances = [
+            d for d in callback.history["min_goal_distance"][-100:]
+            if d >= 0
+        ]
+
+        if last100_goal_distances:
+            print(
+                "Average minimum goal distance over last 100 eligible episodes:",
+                np.mean(last100_goal_distances)
+            )
+        else:
+            print(
+                "Average minimum goal distance over last 100 eligible episodes:",
+                "No final-room entries"
+            )
+        
+        last100_inside_final_room = np.sum(
+    callback.history["inside_final_room_action_counts"][-100:],
+    axis=0
+)
+
+    last100_facing_goal = np.sum(
+        callback.history["facing_goal_action_counts"][-100:],
+        axis=0
+    )
+
+    print("\n--- LAST 100 GOAL ACTION DIAGNOSTICS ---")
+
+    print("While inside final room:")
+    for i, name in enumerate(action_names):
+        print(f"{name}: {last100_inside_final_room[i]}")
+
+    print("\nWhile facing Goal:")
+    for i, name in enumerate(action_names):
+        print(f"{name}: {last100_facing_goal[i]}")
+    
+    last100_on_door2_facing_final_room = np.sum(
+        callback.history["on_door2_facing_final_room_action_counts"][-100:],
+        axis=0
+    )
+
+    print("\nWhile ON Door2 and FACING INTO final room:")
+    for i, name in enumerate(action_names):
+        print(f"{name}: {last100_on_door2_facing_final_room[i]}")
 
         
 
