@@ -735,11 +735,12 @@ for seed in seeds:
         seed=seed
     )
 
+    total_timesteps = 500_000
     callback = MetricsCallback()
-    annealing_callback = IntrinsicAnnealingCallback(total_timesteps=500_000, start=1.0, end=0.15)
+    annealing_callback = IntrinsicAnnealingCallback(total_timesteps=total_timesteps, start=1.0, end=0.15)
 
 
-    model.learn(total_timesteps=500_000,callback=CallbackList([annealing_callback, callback]))
+    model.learn(total_timesteps=total_timesteps,callback=CallbackList([annealing_callback, callback]))
 
     env = vec_env.envs[0]
     episodes = len(callback.history["success"])
