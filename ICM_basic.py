@@ -332,7 +332,6 @@ for seed in seeds:
     print("Average state coverage:", np.mean(coverages))
     print("Average extrinsic return:", np.mean(callback.history["extrinsic_return"]))
     print("Action dim:", action_dim)
-    print("Intrinsic reward:", intrinsic_rewards)
 
     print("*******************")
     print("Success rate over last 100 episodes: ", mean_last(successes, 100) * 100, "%")
