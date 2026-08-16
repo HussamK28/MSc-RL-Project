@@ -57,7 +57,6 @@ class MetricsCallback(BaseCallback):
                         "mean_learning_progress":[],
                         "mean_fast_pred_error":[],
                         "mean_slow_pred_error":[],
-                        "positive_lp_fraction": [],
                         "door1_faced_with_key": [],
                         "door2_with_key":[],
                         "door2_faced_with_key": [],
@@ -376,6 +375,7 @@ class MetricsWrapper(gym.Wrapper):
 
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.update_subgoal_metrics()
+        x,y = self.unwrapped.agent_pos
 
         # Check whether the doors were just opened on this timestep
         # Award completion bonuses if true
@@ -543,7 +543,7 @@ class MetricsWrapper(gym.Wrapper):
                 "goal_reached": int(self.ep_goal_reached),
     })
 
-
+            # If any sub-goals were achieved, we increment the relevant counter
             self.key1_reached += int(self.ep_key1)
             self.door1_opened += int(self.ep_door1)
             self.key2_reached += int(self.ep_key2)
@@ -555,13 +555,14 @@ class MetricsWrapper(gym.Wrapper):
             self.final_room_entered += int(self.ep_final_room_entered)
             self.goal_reached += int(self.ep_goal_reached)
 
+            # Add if given that key1 was collected was door1 opened to bottleneck history
             if self.ep_key1:
                 self.bottleneck_history["door1"].append(int(self.ep_door1))
 
-
+            # Add if given that key2 was collected was door2 opened to bottleneck history
             if self.ep_key2:
                 self.bottleneck_history["door2"].append(int(self.ep_door2))
-            
+            # Add if given that door2 was opened did agent enter final room to bottleneck history
             if self.ep_door2:
                 self.bottleneck_history["final_room"].append(int(self.ep_final_room_entered))
             
@@ -574,17 +575,20 @@ class MetricsWrapper(gym.Wrapper):
         
 
         return obs, total_reward, terminated, truncated, info
-
+    # Normalise observations by dividing by 10
     def normalise_observations(self, obs):
         obs = np.asarray(obs, dtype=np.float32)
         return obs / 10.0
 
-    
+    # This function can be used similar to adaptive reward functions
     def adaptive_bottleneck_scale(self, base_scale, success_rate, bottleneck_scale=2.0):
+        # Calculate difficulty by subtracting success rate from 1
         difficulty = 1.0 - success_rate
+        # Multiply base scale by (1 + bottleneck_scale + difficulty)
         return base_scale * (1.0 + bottleneck_scale * difficulty)
-    
+    # Updates bottlenecks according to difficulty
     def update_bottleneck_rewards(self):
+        # Define dictionary of success rates, and iterage through the last 20 to get an average for each stage
         success_rates = {}
         for stage, history in self.bottleneck_history.items():
             if len(history) >= 20:
@@ -593,21 +597,28 @@ class MetricsWrapper(gym.Wrapper):
         if not success_rates:
             self.current_bottleneck = None
             return
+        # If the average success rate for that stage is 95% there is no bottleneck
         if all(rate>=0.95 for rate in success_rates.values()):
             self.current_bottleneck = None
         else:
+            # Else we find the stage with the smallest success rate
             self.current_bottleneck = min(success_rates, key=success_rates.get)
+            # Get the base reward rates for each stage
         self.door1_reward_scale = self.base_door1_reward_scale
         self.door2_reward_scale = self.base_door2_reward_scale
         self.entry_reward_scale = self.base_entry_reward_scale
         self.goal_reward_scale = self.base_goal_reward_scale
 
+        # If door1 is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
         if "door1" in success_rates:
             self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, success_rates["door1"], self.bottleneck_scale)
+        # If door2 is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
         if "door2" in success_rates:
             self.door2_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, success_rates["door2"], self.bottleneck_scale)
+        # If final room is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
         if "final_room" in success_rates:
             self.entry_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, success_rates["final_room"], self.bottleneck_scale)
+        # If goal is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
         if "goal" in success_rates:
             self.goal_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, success_rates["goal"], self.bottleneck_scale)
 
@@ -739,14 +750,11 @@ for seed in seeds:
     env = vec_env.envs[0]
     episodes = len(callback.history["success"])
 
+    # Calculate metrics for each seed
     seed_result = {
         "seed": seed,
         "episodes": episodes,
-        "success_rate": (
-            np.mean(callback.history["success"])
-            if episodes > 0
-            else 0.0
-        ),
+        "success_rate": (np.mean(callback.history["success"]) if episodes > 0 else 0.0),
         "coverage": (
             np.mean(callback.history["state_coverage"])
             if episodes > 0
@@ -955,7 +963,6 @@ for seed in seeds:
         print("P(open door1 | reached door1 with key1): ", convert_to_percentage(env.door1_opened, env.door1_reached_with_key), "%")
         print("P(face door1 | reached door1):",convert_to_percentage(env.door1_faced_with_key,env.door1_reached_with_key),"%")
         print("P(open door1 | faced door1):",convert_to_percentage(env.door1_opened,env.door1_faced_with_key),"%")
-        print("Average positive LP fraction:",np.mean(callback.history["positive_lp_fraction"]))
         print("Mean prediction error:",np.mean(callback.history["mean_prediction_error"]))
         print("Maximum episode mean prediction error:",np.max(callback.history["mean_prediction_error"]))
         print("Mean learning progress:",np.mean(callback.history["mean_learning_progress"]))
