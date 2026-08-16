@@ -1,9 +1,10 @@
+# Imports the necessary minigrid libraries
 import time
 from minigrid.core.grid import Grid
 from minigrid.core.world_object import Door, Key, Goal, Wall, Ball
 from minigrid.minigrid_env import MiniGridEnv
 from minigrid.core.mission import MissionSpace
-
+# Defines the noisy-TV object, its colour and whether it can overlap and be picked up
 class NoisyTVBall(Ball):
     def __init__(self):
         super().__init__("purple")
@@ -12,22 +13,23 @@ class NoisyTVBall(Ball):
     def can_pickup(self):
         return False
 
-
+# Defines the key characteristics of the MiniGrid environment
+# Such as the noisy TV, its positioning and how many episodes occur
+# As well as the size of the miniGrid environment and the number of steps per episode, how much the agent can see and if it can see through walls
 class MiniGrid(MiniGridEnv):
-    def __init__(self, size=16, max_steps=500, noisy_tv=False, num_balls=10, fixed_layout=False, **kwargs):
+    def __init__(self, size=12, max_steps=400, noisy_tv=False, num_balls=10, **kwargs):
         self.noisy_tv = noisy_tv
         self.num_balls = num_balls
-        self.fixed_layout = fixed_layout
         self.episode_count = 0
         self.ball_positions_a = []
         self.ball_positions_b = []
 
 
-
+        # Instructions for the agent to follow
         instructions = MissionSpace(
             mission_func=lambda: "You need to find the key before getting to the goal square."
         )
-
+        
         super().__init__(
             mission_space=instructions,
             width=size,
@@ -37,31 +39,30 @@ class MiniGrid(MiniGridEnv):
             agent_view_size=7,
             **kwargs
         )
-    
+    # Creates a grid with walls
     def _gen_grid(self, width, height):
         self.grid = Grid(width, height)
         self.grid.wall_rect(0, 0, width, height)
-
+        # These walls then turn into 3 separate rooms
         wall1 = width // 3
         wall2 = (2 * width) // 3
         for y_pos in range(1, height-1):
             self.grid.set(wall1, y_pos, Wall())
             self.grid.set(wall2, y_pos, Wall())
-
+        # Define the colours of the keys and doors and randomly assign a colour to a key
         colours = ["red", "blue", "green", "yellow"]
         key1_colour = self.np_random.choice(colours)
+        # Randomly choose a different colour that does not match
         remaining_colours = [c for c in colours if c != key1_colour]
         key2_colour = self.np_random.choice(remaining_colours)
 
+        # Define the mission statement
         self.mission =(f"To reach the goal, you must first have the {key1_colour} key to unlock door 1!"
         f"You then need to get the {key2_colour} key to unlock door 2 and reach the end goal!")
 
-        if self.fixed_layout:
-            door1_pos = height // 3
-            door2_pos = (2 * height) // 3
-        else:
-            door1_pos = self.np_random.integers(2, height-2)
-            door2_pos = self.np_random.integers(2, height-2)
+        # Define position and set up of keys
+        door1_pos = height // 3
+        door2_pos = (2 * height) // 3
 
         door1 = Door(key1_colour, is_open=False, is_locked=True)
         self.grid.set(wall1, door1_pos, door1)
@@ -69,26 +70,15 @@ class MiniGrid(MiniGridEnv):
         door2 = Door(key2_colour, is_open=False, is_locked=True)
         self.grid.set(wall2, door2_pos, door2)
 
-        
-        
-        if self.fixed_layout:
-            key1_x = 2
-            key1_y = height // 2
+        key1_x = 2
+        key1_y = height // 2
 
-            key2_x = wall1 + 2
-            key2_y = height // 2
+        key2_x = wall1 + 2
+        key2_y = height // 2
 
-            goal_x = wall2 + 2
-            goal_y = height // 2
-        else:
-            key1_x = int(self.np_random.integers(1, wall1))
-            key1_y = int(self.np_random.integers(1, height-1))
+        goal_x = wall2 + 2
+        goal_y = height // 2
 
-            key2_x = int(self.np_random.integers(wall1+1, wall2))
-            key2_y = int(self.np_random.integers(1, height-1))
-
-            goal_x = int(self.np_random.integers(wall2 + 1, width - 1))
-            goal_y = int(self.np_random.integers(1, height - 1))
 
         self.grid.set(key1_x, key1_y, Key(key1_colour))
         self.grid.set(key2_x, key2_y, Key(key2_colour))
@@ -96,7 +86,7 @@ class MiniGrid(MiniGridEnv):
         self.goal_pos = (int(goal_x), int(goal_y))
         self.key2_pos = (int(key2_x), int(key2_y))
 
-
+        # Store the wall and door coordinates so each experiment can utilise it.
         self.wall1 = wall1
         self.wall2 = wall2
 
@@ -106,12 +96,11 @@ class MiniGrid(MiniGridEnv):
         self.key1_colour = key1_colour
         self.key2_colour = key2_colour
 
-        if self.fixed_layout:
-            self.agent_pos = (1,1)
-            self.agent_dir = 0
-        else:
-            self.place_agent(top=(1,1), size=(wall1 - 1, height - 2))
+        # Define agent starting position and direction
+        self.agent_pos = (1,1)
+        self.agent_dir = 0
 
+        # If noisy Tv is true we define a set of reserved spots and we find any we find empty positions
         if self.noisy_tv:
             if len(self.ball_positions_a) == 0:
                 reserved = set()
@@ -128,35 +117,34 @@ class MiniGrid(MiniGridEnv):
 
             self.place_noisy_tv()
 
-
+    # This function keeps track of states that already have noisy TV items occupied
     def get_empty_position(self, reserved=None):
         if reserved is None:
             reserved = set()
-
+        # keep finding positions until empty cell found
         while True:
             x = self.np_random.integers(1, self.width - 1)
             y = self.np_random.integers(1, self.height - 1)
             position = (x, y)
 
-            if (
-                self.grid.get(x, y) is None
-                and position != tuple(self.agent_pos)
-                and position not in reserved
-            ):
+            if (self.grid.get(x, y) is None and position != tuple(self.agent_pos) and position not in reserved):
                 return position
 
-
+    # Place the noisy tv balls in the grid and switch after 1250 episodes (50/50 switch)
     def place_noisy_tv(self):
-        positions = (self.ball_positions_a if self.episode_count < 625 else self.ball_positions_b)
+        positions = (self.ball_positions_a if self.episode_count < 1250 else self.ball_positions_b)
         for x,y in positions:
             self.grid.set(x,y,NoisyTVBall())
     
     def step(self, action):
+        # Before executing an action check to see if agent is carrying something 
+        # and the object in front of the agent
         carried_before = self.carrying
         front_position = tuple(self.front_pos)
         front_obj = self.grid.get(*front_position)
         obs, reward, terminated, truncated, info = super().step(action)
 
+        # Check to see if door has successfully been unlocked
         door_unlock_success = (
             action == self.actions.toggle
             and isinstance(front_obj, Door)
@@ -164,12 +152,15 @@ class MiniGrid(MiniGridEnv):
             and carried_before.color == front_obj.color
             and front_obj.is_open
         )
+        # If so, drop the key it was carrying
         if door_unlock_success:
             self.carrying = None
             obs = self.gen_obs()
 
         return obs, reward, terminated, truncated, info
-
+    
+    # At the end of each episode, reset the MiniGrid environment 
+    # and increase episode count
     def reset(self, **kwargs):
         obs, info = super().reset(**kwargs)
         self.episode_count += 1
@@ -179,7 +170,7 @@ class MiniGrid(MiniGridEnv):
 
 
 if __name__ == "__main__":
-    env = MiniGrid(size=16, max_steps=500, noisy_tv=False, fixed_layout=True, render_mode=None)
+    env = MiniGrid(size=12, max_steps=400, noisy_tv=False, render_mode="human")
     num_tests = 10
 
     for episode in range(num_tests):

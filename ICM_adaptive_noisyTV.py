@@ -779,7 +779,6 @@ class MetricsWrapper(gym.Wrapper):
         info["goal_facing_bonus"] = goal_facing_bonus
         info["goal_forward_bonus"] = goal_forward_bonus
 
-        #info["curiosity_dampening"] = curiosity_dampening
 
 
         self.episode_return += total_reward
@@ -947,7 +946,7 @@ class MetricsWrapper(gym.Wrapper):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-temp_env = MiniGrid(size=12, max_steps=400, noisy_tv=True, fixed_layout=True, render_mode=None)
+temp_env = MiniGrid(size=12, max_steps=400, noisy_tv=True, render_mode=None)
 temp_env = FilterObservation(temp_env, ["image", "direction"])
 temp_env = FlattenObservation(temp_env)
 
@@ -963,7 +962,6 @@ def make_env(icm, icm_optimiser):
             size=12,
             max_steps=400,
             noisy_tv=True,
-            fixed_layout=True,
             render_mode=None
         )
 

@@ -1,7 +1,9 @@
+# Import the necessary libraries for my experiments
 import os
 import pickle
 from datetime import datetime
 
+# Imports the PPO algorithm and a callback mechanism for the metrics
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
@@ -15,10 +17,12 @@ import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Imports the gym and MiniGrid environments
 from MiniGrid import MiniGrid
 from gymnasium.wrappers import FilterObservation, FlattenObservation
 from collections import deque
 
+# Annealing reduces influence of intrinsic motivation as training progress
 class IntrinsicAnnealingCallback(BaseCallback):
     def __init__(self, total_timesteps, start=1.0, end=0.15):
         super().__init__()
@@ -27,15 +31,18 @@ class IntrinsicAnnealingCallback(BaseCallback):
         self.end = end
     
     def _on_step(self):
+        # Calculate fraction of timesteps completed
         fraction = min(self.num_timesteps / self.total_timesteps, 1.0)
+        # Scale the intrinsic motivation according to the fraction
         scale = (self.start + fraction * (self.end - self.start))
         self.training_env.envs[0].intrinsic_reward_scale = scale
         return True
 
-
+# This class provides a callback mechanism so that the metrics described below can be completed at the end of each episode
 class MetricsCallback(BaseCallback):
     def __init__(self):
         super().__init__()
+        # This history dictionary stores every metric to be recoreded by the program
         self.history = {"return": [],
                         "success": [],
                         "intrinsic_reward": [],
@@ -45,8 +52,7 @@ class MetricsCallback(BaseCallback):
                         "door1": [], 
                         "key2": [], 
                         "door2": [], 
-                        "door1_with_key": [], 
-                        "mean_intrinsic_per_step":[],
+                        "door1_with_key": [],
                         "mean_prediction_error": [],
                         "mean_learning_progress":[],
                         "mean_fast_pred_error":[],
@@ -57,14 +63,8 @@ class MetricsCallback(BaseCallback):
                         "door2_faced_with_key": [],
                         "final_room_entered": [],
                         "goal_reached": [],
-                        "final_room_entry_direction": [],
-                        "distance_to_goal_at_entry": [],
-                        "steps_remaining_at_entry": [],
-                        "exited_final_room": [],
-                        "steps_from_entry_to_goal": [],
-                        "mean_intrinsic_scale": [],
                         }
-
+    # At the end of every episode, we pop each sub-array from completed_episodes and append the history dictionary with the metrics
     def _on_step(self):
         env = self.training_env.envs[0]
 
@@ -75,23 +75,27 @@ class MetricsCallback(BaseCallback):
 
         return True
 
+# Defines the ICM module
 class ICM(nn.Module):
     def __init__(self, observation_dim, action_dim, feature_dim=128):
         super().__init__()
         self.action_dim = action_dim
+        # The encoder used to turn the agent’s observation into something to be 
+        # learned from such as the action and what should happen in the next state
         self.encoder = nn.Sequential(
             nn.Linear(observation_dim, 256),
             nn.ReLU(),
             nn.Linear(256, feature_dim),
             nn.Tanh()
         )
-
+        # The inverse model tries to figure out what action 
+        # led to this new state. 
         self.inverse_model = nn.Sequential(
             nn.Linear(feature_dim*2, 256),
             nn.ReLU(),
             nn.Linear(256, action_dim)
         )
-
+        # The forward model works out what action to do next. 
         self.forward_model = nn.Sequential(
             nn.Linear(feature_dim + action_dim, 256),
             nn.ReLU(),
@@ -99,53 +103,64 @@ class ICM(nn.Module):
         )
     
     def forward(self, observation, next_observation, action):
+        # Put the current and next observation through encoder
         phi = self.encoder(observation)
         next_phi = self.encoder(next_observation)
-
+        # Concatenated these observations and send it through inverse model
         inverse_input = torch.cat([phi, next_phi], dim=1)
         predicted_action = self.inverse_model(inverse_input)
 
+        # Encode each action through one hot encoding
+        # Concatenate that with current observation
+        # Predict the next observation through forward model
         action_onehot = F.one_hot(action, num_classes=self.action_dim).float()
         forward_input = torch.cat([phi, action_onehot], dim=1)
         predicted_next_phi = self.forward_model(forward_input)
-
+        
+        # Calculate predicted error and inverse loss and mean forward loss
         forward_error = F.mse_loss(predicted_next_phi, next_phi.detach(), reduction="none").mean(dim=1)
         inverse_loss = F.cross_entropy(predicted_action, action)
         forward_loss = forward_error.mean()
 
+        # ICM loss has 80% weighting
         beta = 0.2
         icm_loss = ((1.0 - beta) * inverse_loss + beta * forward_loss)
 
         return (forward_error.detach(), icm_loss, forward_loss.detach(), inverse_loss.detach())
 
+# This MetricsWrapper class stores information about each metric that will be recorded at the end of each episode
 class MetricsWrapper(gym.Wrapper):
     def __init__(self, env, icm, icm_optimiser, device):
         super().__init__(env)
+    # Define ICM, its optimiser, device, previous observations, intrinsic rewards
         self.icm = icm
         self.icm_optimiser = icm_optimiser
         self.device = device
         self.previous_observations = None
         self.intrinsic_reward_scale = 1.0
-
+    # Define short term and long term learning progress and error averages
         self.learning_progress_fast = 0.01
         self.learning_progress_slow = 0.001
         self.fast_pred_error = None
         self.slow_pred_error = None
         self.learning_progress_clip = 0.1
-
+        # The per episode trajectory and all trajectories are stored in separate arrays.
+        # Also a heatmap for each seed is also created from a zero-matrix
         self.episode_trajectory = []
         self.all_trajectories = []
         self.visit_heatmap = np.zeros((env.unwrapped.height, env.unwrapped.width))
 
+        # These variables will store data such as return, 
+        # intrinsic/extrinsic reward, success from each episode
         self.episode_return = 0
         self.episode_intrinsic_reward = 0
         self.episode_success = 0
         self.episode_extrinsic_return = 0
         self.episode_states = set()
-
+        # Completed_episodes will store all the metrics data collected per episode before sending them to the history dictionary
         self.completed_episodes = []
 
-
+        # These variables below will store the number of times a particular sub-goal has been achieved
         self.key1_reached = 0
         self.door1_opened = 0
         self.key2_reached = 0
@@ -157,9 +172,11 @@ class MetricsWrapper(gym.Wrapper):
         self.door2_faced_with_key = 0
         self.final_room_entered = 0
         self.goal_reached = 0
-
+        # Discount factor rate
         self.door_shaping_gamma = 0.995
 
+        # These are base scaling rewards for each stage
+        # Including a completion bonus upon the end of each stage
         self.base_door1_reward_scale = 0.0025
         self.door1_completion_bonus = 0.05
         self.base_door2_reward_scale = 0.0025
@@ -168,13 +185,17 @@ class MetricsWrapper(gym.Wrapper):
         self.base_goal_reward_scale = 0.0015
         self.final_room_entry_bonus = 0.02
 
+        # Base reward scales that increases during bottleneck
         self.door1_reward_scale = self.base_door1_reward_scale
         self.door2_reward_scale = self.base_door2_reward_scale
         self.entry_reward_scale = self.base_entry_reward_scale
         self.goal_reward_scale = self.base_goal_reward_scale
 
+        # Defines the number of recent episodes and scaling for bottleneck stages
         self.bottleneck_window = 100
         self.bottleneck_scale = 2.0
+        # Creates a queue of the last 100 episodes for each major stage
+        # where bottleneck is present
         self.bottleneck_history = {
             "door1": deque(maxlen=self.bottleneck_window),
             "door2": deque(maxlen=self.bottleneck_window),
@@ -184,32 +205,38 @@ class MetricsWrapper(gym.Wrapper):
         self.current_bottleneck = None
 
         self.reset_episode_metrics()
-    
+
+    # This function calculates the learning progress
     def calculate_learning_progress(self, prediction_error):
+        # Converts prediction error into a float
         prediction_error = float(prediction_error)
+        # Defines both long/short term prediction errors
         if self.fast_pred_error is None:
             self.fast_pred_error = prediction_error
             self.slow_pred_error = prediction_error
             return 0.0
-        
+        # Calculates prediction errors by multiplying learning progress by prediction error 
+        # and the difficulty rating times prediction error
         self.fast_pred_error = (self.learning_progress_fast * prediction_error + (1.0 - self.learning_progress_fast) * self.fast_pred_error)
         self.slow_pred_error = (self.learning_progress_slow * prediction_error + (1.0 - self.learning_progress_slow) * self.slow_pred_error)
 
+        # Finds difference between prediction errors and returns the value 
+        # unless if its negative and then it would return 0
         learning_progress = self.slow_pred_error - self.fast_pred_error
         learning_progress = max(learning_progress, 0.0)
 
+        # Clips LP between 0-0.1
         return float(np.clip(learning_progress,0.0, self.learning_progress_clip))
 
-
+    # In this function, all the variables defined in the initialisation function are reset
     def reset_episode_metrics(self):
         self.episode_return = 0
         self.episode_intrinsic_reward = 0
         self.episode_success = 0
         self.episode_extrinsic_return = 0
         self.episode_steps = 0
-        self.episode_positive_lp_steps = 0
         self.episode_states = set()
-
+        # Set these boolean flags to False
         self.ep_key1 = False
         self.ep_door1 = False
         self.ep_key2 = False
@@ -228,13 +255,7 @@ class MetricsWrapper(gym.Wrapper):
         self.previous_entry_distance = None
         self.previous_goal_distance = None
 
-        self.final_room_entry_direction = -1
-        self.distance_to_goal_at_entry = -1
-        self.steps_remaining_at_entry = -1
-        self.exited_final_room = False
-        self.step_entered_final_room = None
-        self.steps_from_entry_to_goal = -1
-
+        # Define arrays
         self.episode_prediction_errors = []
         self.episode_learning_progress = []
         self.episode_fast_errors = []
@@ -243,10 +264,12 @@ class MetricsWrapper(gym.Wrapper):
 
 
     def reset(self, **kwargs):
+        # Reset environment
         obs, info = self.env.reset(**kwargs)
+        # Normalise previous observations
         self.previous_observations = self.normalise_observations(obs)
         self.reset_episode_metrics()
-
+        # This extracts the agent's starting position and adds it to heatmap
         x, y = self.unwrapped.agent_pos
         self.episode_trajectory = [(x, y)]
         self.visit_heatmap[y, x] += 1
@@ -255,19 +278,20 @@ class MetricsWrapper(gym.Wrapper):
         return obs, info
 
     def state_key(self):
+    # Retrieves the agent's current position and whether it is carrying an object
         x, y = self.unwrapped.agent_pos
         carrying = self.unwrapped.carrying
         carried_object = None
-
+        # Retrieves the object type and colour
         if carrying is not None:
             carried_object = (carrying.type, carrying.color)
-        
+        # Returns the positioning, direction, object and the status of each door to the state coverage heatmap 
         return int(x), int(y), int(self.unwrapped.agent_dir), carried_object, bool(self.ep_door1), bool(self.ep_door2)
-    
+    # Checks if carrying key whose colour matches key1
     def check_if_carrying_key1(self):
         carrying = self.unwrapped.carrying
         return (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour)
-    
+    # calculates distance between agent and door 1
     def distance_to_door1(self):
         agent_x, agent_y = self.unwrapped.agent_pos
         door_x = self.unwrapped.wall1
@@ -275,50 +299,52 @@ class MetricsWrapper(gym.Wrapper):
         
         return (abs(int(agent_x) - int(door_x)) + abs(int(agent_y) - int(door_y)))
 
-
+    # Checks if carrying key whose colour matches key2
     def check_if_carrying_key2(self):
         carrying = self.unwrapped.carrying
         return (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key2_colour)
-    
+    # calculates distance between agent and door 2
     def distance_to_door2(self):
         agent_x, agent_y = self.unwrapped.agent_pos
         door_x = self.unwrapped.wall2
         door_y = self.unwrapped.door2_pos
         return (abs(int(agent_x) - int(door_x)) + abs(int(agent_y) - int(door_y)))
-
+    # calculates distance between agent and goal
     def distance_to_goal(self):
         agent_x, agent_y = self.unwrapped.agent_pos
         goal_x, goal_y = self.unwrapped.goal_pos
         return (abs(int(agent_x) - int(goal_x)) + abs(int(agent_y) - int(goal_y)))
-
+    # calculates distance between agent and final room
     def distance_to_final_room(self):
         agent_x, agent_y = self.unwrapped.agent_pos
         entry_x = int(self.unwrapped.wall2) + 1
         entry_y = int(self.unwrapped.door2_pos)
         return (abs(int(agent_x) - entry_x) + abs(int(agent_y) - entry_y))
 
-    
+        # This function updates each boolean flag if a sub-goal is completed
     def update_subgoal_metrics(self):
+        # Extract the grid and whether agent is carrying something
         grid = self.unwrapped.grid
         carrying = self.unwrapped.carrying
+        # If agent is carrying a key that matches the colour of key 1, update the key 1 flag
         if (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour):
             self.ep_key1 = True
-        
+        # If door 1 is open, we update that boolean flag
         door1 = grid.get(self.unwrapped.wall1, self.unwrapped.door1_pos)
         if door1 is not None and door1.is_open:
             self.ep_door1 = True
-        
+        # If agent is carrying a key that matches the colour of key 2, update the key 2 flag
         if (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key2_colour):
             self.ep_key2 = True
-        
+        # If door 1 is open, we update that boolean flag
         door2 = grid.get(self.unwrapped.wall2, self.unwrapped.door2_pos)
         if door2 is not None and door2.is_open:
             self.ep_door2 = True
-        
+                # Gets the agent's current position and uses the Manhattan distance to calculate distance between agent and door1
         agent_x, agent_y = self.unwrapped.agent_pos
 
         door1_distance = (abs(int(agent_x) - int(self.unwrapped.wall1)) + abs(int(agent_y) - int(self.unwrapped.door1_pos)))
-
+        # Checks to see if agent reaches door1 with key1
         carrying_key1 = (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour)
 
         if carrying_key1 and door1_distance == 1:
@@ -330,7 +356,7 @@ class MetricsWrapper(gym.Wrapper):
             self.ep_door1_faced_with_key = True
         
         door2_distance = (abs(int(agent_x) - int(self.unwrapped.wall2)) + abs(int(agent_y) - int(self.unwrapped.door2_pos)))
-        
+        # Checks to see if agent reaches door1 with key1
         carrying_key2 = (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key2_colour)
 
         if carrying_key2 and door2_distance == 1:
@@ -339,10 +365,10 @@ class MetricsWrapper(gym.Wrapper):
         
         if (carrying_key2 and int(front_x) == int(self.unwrapped.wall2) and int(front_y) == int(self.unwrapped.door2_pos)):
             self.ep_door2_faced_with_key = True
-        
+       # If door 2 is opened and agent as passed it, it has entered final room 
         if (self.ep_door2 and int(agent_x) > int(self.unwrapped.wall2)):
             self.ep_final_room_entered = True
-
+    # Check to see the current status of doors
     def step(self, action):
         door1_was_open = self.ep_door1
         door2_was_open = self.ep_door2
@@ -351,48 +377,51 @@ class MetricsWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self.update_subgoal_metrics()
 
+        # Check whether the doors were just opened on this timestep
+        # Award completion bonuses if true
         door1_just_opened = (not door1_was_open and self.ep_door1)
         door1_completion_bonus = (self.door1_completion_bonus if door1_just_opened else 0.0)
         door2_just_opened = (not door2_was_open and self.ep_door2)
         door2_completion_bonus = (self.door2_completion_bonus if door2_just_opened else 0.0)
         final_room_just_entered = (not final_room_was_entered and self.ep_final_room_entered)
-        if final_room_just_entered:
-            self.final_room_entry_direction = int(self.unwrapped.agent_dir)
-            self.distance_to_goal_at_entry = int(self.distance_to_goal())
-            self.steps_remaining_at_entry = int(self.unwrapped.max_steps - self.unwrapped.step_count)
-            self.step_entered_final_room = int(self.episode_steps + 1)
         final_room_entry_bonus = (self.final_room_entry_bonus if final_room_just_entered else 0.0)
 
-        x, y = self.unwrapped.agent_pos
-        if self.ep_final_room_entered and int(x) <= int(self.unwrapped.wall2):
-            self.exited_final_room = True
 
+        # Add states to trajectory and heatmap
         self.episode_trajectory.append((int(x), int(y)))
         self.visit_heatmap[y, x] += 1
-
+        # Normalise next observations
         normalised_next_obs = self.normalise_observations(obs)
-
+        # Put current and next observations and actions into tensor
         observation_tensor = torch.tensor(self.previous_observations, dtype=torch.float32, device=self.device).unsqueeze(0)
         next_observation_tensor = torch.tensor(normalised_next_obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         action_tensor = torch.tensor([action], dtype=torch.long, device=self.device)
-
+        # Pass variables through ICM NN
         (prediction_error_tensor, icm_loss, forward_loss, inverse_loss) = self.icm(
             observation_tensor,
             next_observation_tensor,
             action_tensor
         )
 
-        self.icm_optimiser.zero_grad()
-        icm_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.icm.parameters(), max_norm=0.5)
-        self.icm_optimiser.step()
 
+        # Clear gradients from previous updates
+        self.icm_optimiser.zero_grad()
+        # Backpropagate forward and ICM loss
+        icm_loss.backward()
+        # Clip gradients to reduce larger updates
+        torch.nn.utils.clip_grad_norm_(self.icm.parameters(), max_norm=0.5)
+        # Update ICM NN
+        self.icm_optimiser.step()
+        # Calculate Prediction error & Learning progress
         prediction_error = float(prediction_error_tensor.item())
         
         learning_progress = self.calculate_learning_progress(prediction_error)
         scaled_prediction_error = float(np.clip(prediction_error, 0.0, 0.1))
 
+        # Reward shaping to help motivate the agent
         door1_progress_reward = 0.0
+        # If carrying key 1 we check the distance 
+        # the closer the agent is to the door the higher the bonus is
         if self.check_if_carrying_key1():
             current_distance = self.distance_to_door1()
             if self.previous_door1_distance is not None:
@@ -444,20 +473,22 @@ class MetricsWrapper(gym.Wrapper):
         else:
             self.previous_entry_distance = None
             self.previous_goal_distance = None
-
+        # clip the learning progress between 0 and 1
         scaled_learning_progress = float(np.clip(learning_progress, 0.0, 0.1))
+        # Give 80% weighting to LP in comparison to error weight and use that to calculate hybrid reward
         prediction_error_weight = 0.2
         learning_progress_weight = 0.8
         
         hybrid_reward = (prediction_error_weight * scaled_prediction_error + learning_progress_weight * scaled_learning_progress)
-
+        # Using the annealing formula from earlier multiply it by hybrid reward
         intrinsic_reward = hybrid_reward * self.intrinsic_reward_scale
+        # Scale each stage reward by the adaptive reward bonus scheme
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
         scaled_entry_reward = (self.entry_reward_scale * entry_progress_reward)
         scaled_goal_reward = (self.goal_reward_scale * goal_progress_reward)
-
         curiousity_reward = float(np.clip(intrinsic_reward, 0.0, 0.10))
+        # Calculate total shaping reward and add it to curiosity reward
         shaping_reward = (scaled_door1_reward + door1_completion_bonus + scaled_door2_reward + door2_completion_bonus + scaled_entry_reward + scaled_goal_reward + final_room_entry_bonus)
         total_intrinsic_reward = float(np.clip(curiousity_reward + shaping_reward, -0.03, 0.15))
         extrinsic_reward = float(reward)
@@ -466,41 +497,15 @@ class MetricsWrapper(gym.Wrapper):
         info["intrinsic_reward"] = total_intrinsic_reward
         info["hybrid_reward"] = hybrid_reward
 
-        info["door1_progress_reward"] = door1_progress_reward
-        info["scaled_door1_reward"] = scaled_door1_reward
-        info["door1_completion_bonus"] = door1_completion_bonus
-
-        info["door2_progress_reward"] = door2_progress_reward
-        info["scaled_door2_reward"] = scaled_door2_reward
-        info["door2_completion_bonus"] = door2_completion_bonus
-
-        info["entry_progress_reward"] = (entry_progress_reward)
-        info["scaled_entry_reward"] = (scaled_entry_reward)
-
-        info["goal_progress_reward"] = goal_progress_reward
-        info["scaled_goal_reward"] = scaled_goal_reward
-        info["final_room_entry_bonus"] = final_room_entry_bonus
-        info["final_room_entered"] = int(self.ep_final_room_entered)
-
-        info["prediction_error"] = prediction_error
-        info["learning_progress"] = learning_progress
-        info["scaled_prediction_error"] = scaled_prediction_error
-        info["scaled_learning_progress"] = scaled_learning_progress
-
-        info["fast_pred_error"] = float(self.fast_pred_error)
-        info["slow_pred_error"] = float(self.slow_pred_error)
-        info["icm_forward_loss"] = float(forward_loss.item())
-        info["icm_inverse_loss"] = float(inverse_loss.item())
-
+        # Increment per episode variables 
         self.episode_return += total_reward
         self.episode_intrinsic_reward += total_intrinsic_reward
         self.episode_extrinsic_return += extrinsic_reward
         self.episode_steps += 1
-        if learning_progress > 0:
-            self.episode_positive_lp_steps += 1
 
         self.episode_states.add(self.state_key())
 
+        # AAdd per episode PE and LP to arrays
         self.episode_prediction_errors.append(prediction_error)
         self.episode_learning_progress.append(learning_progress)
         self.episode_fast_errors.append(float(self.fast_pred_error))
@@ -511,11 +516,9 @@ class MetricsWrapper(gym.Wrapper):
             self.episode_success = 1
             self.ep_goal_reached = True
 
-            if self.step_entered_final_room is not None:
-                self.steps_from_entry_to_goal = int(self.episode_steps - self.step_entered_final_room)
 
         done = terminated or truncated
-
+        # If done add to completed episodes array
         if done:
             self.all_trajectories.append(self.episode_trajectory.copy())
             self.completed_episodes.append({
@@ -529,23 +532,15 @@ class MetricsWrapper(gym.Wrapper):
                 "key2": int(self.ep_key2),
                 "door2": int(self.ep_door2),
                 "door1_with_key": int(self.ep_door1_reached_with_key),
-                "mean_intrinsic_per_step": (self.episode_intrinsic_reward / self.episode_steps if self.episode_steps > 0 else 0.0),
                 "mean_prediction_error": (float(np.mean(self.episode_prediction_errors)) if self.episode_prediction_errors else 0.0),
                 "mean_learning_progress": (float(np.mean(self.episode_learning_progress)) if self.episode_learning_progress else 0.0),
                 "mean_fast_pred_error": (float(np.mean(self.episode_fast_errors)) if self.episode_fast_errors else 0.0),
                 "mean_slow_pred_error": (float(np.mean(self.episode_slow_errors)) if self.episode_slow_errors else 0.0),
-                "positive_lp_fraction": (self.episode_positive_lp_steps / self.episode_steps if self.episode_steps > 0 else 0.0),
                 "door1_faced_with_key": int(self.ep_door1_faced_with_key),
                 "door2_with_key": int(self.ep_door2_reached_with_key),
                 "door2_faced_with_key": int(self.ep_door2_faced_with_key),
                 "final_room_entered": int(self.ep_final_room_entered),
                 "goal_reached": int(self.ep_goal_reached),
-                "final_room_entry_direction": int(self.final_room_entry_direction),
-                "distance_to_goal_at_entry": int(self.distance_to_goal_at_entry),
-                "steps_remaining_at_entry": int(self.steps_remaining_at_entry),
-                "exited_final_room": int(self.exited_final_room),
-                "steps_from_entry_to_goal": int(self.steps_from_entry_to_goal),
-                "mean_intrinsic_scale": (float(np.mean(self.episode_intrinsic_scales)) if self.episode_intrinsic_scales else 1.0),
     })
 
 
@@ -619,7 +614,7 @@ class MetricsWrapper(gym.Wrapper):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-temp_env = MiniGrid(size=12, max_steps=400, noisy_tv=False, fixed_layout=True, render_mode=None)
+temp_env = MiniGrid(size=12, max_steps=400, noisy_tv=False, render_mode=None)
 temp_env = FilterObservation(temp_env, ["image", "direction"])
 temp_env = FlattenObservation(temp_env)
 
@@ -635,7 +630,6 @@ def make_env(icm, icm_optimiser):
             size=12,
             max_steps=400,
             noisy_tv=False,
-            fixed_layout=True,
             render_mode=None
         )
 
@@ -986,138 +980,6 @@ for seed in seeds:
         print("P(goal | final room entered) ""over last 100:",conditional_last(callback.history["goal_reached"],callback.history["final_room_entered"],100) * 100,"%")
     
 
-        entry_directions = np.asarray(callback.history["final_room_entry_direction"])
-        entry_goal_distances = np.asarray(callback.history["distance_to_goal_at_entry"])
-        entry_steps_remaining = np.asarray(callback.history["steps_remaining_at_entry"])
-        exited_final_room = np.asarray(callback.history["exited_final_room"])
-        steps_entry_to_goal = np.asarray(callback.history["steps_from_entry_to_goal"])
-        entered_mask = entry_directions >= 0
-
-        print("Average intrinsic scale:", np.mean(callback.history["mean_intrinsic_scale"]))
-        print("Intrinsic scale over last 100 episodes:", mean_last(callback.history["mean_intrinsic_scale"], 100))
-
-        print("\n--- Bottleneck Awareness ---")
-        print("Current bottleneck:", env.current_bottleneck)
-
-        for stage, history in env.bottleneck_history.items():
-            if len(history) > 0:
-                print(
-                    f"{stage} recent success rate: "
-                    f"{np.mean(history) * 100:.2f}% "
-                    f"({len(history)} eligible episodes)"
-                )
-            else:
-                print(f"{stage} recent success rate: No data")
-
-        print("\n--- Adaptive Reward Scales ---")
-
-        print("Current Door1 reward scale:", env.door1_reward_scale)
-        print("Current Door2 reward scale:", env.door2_reward_scale)
-        print("Current final-room reward scale:", env.entry_reward_scale)
-        print("Current goal reward scale:", env.goal_reward_scale)
-        
-        if np.any(entered_mask):
-            print("Average goal distance at final-room entry:",np.mean(entry_goal_distances[entered_mask]))
-            print("Average steps remaining at final-room entry:", np.mean(entry_steps_remaining[entered_mask]))
-            print("P(exit final room | entered):",np.mean(exited_final_room[entered_mask]) * 100,"%")
-
-        successful_entry_mask = steps_entry_to_goal >= 0
-
-        if np.any(successful_entry_mask):
-            print("Average steps from final-room entry to goal:",np.mean(steps_entry_to_goal[successful_entry_mask]))
-        else:
-            print("Average steps from final-room entry to goal:","No successful entries")
-
-    else:
-        print("No episodes completed.")
-    
-
-    direction_names = {
-    0: "right",
-    1: "down",
-    2: "left",
-    3: "up"
-}
-
-    if np.any(entered_mask):
-        print("Final-room entry directions:")
-
-        for direction_id, direction_name in direction_names.items():
-            count = np.sum(entry_directions[entered_mask] == direction_id)
-
-            percentage = (100 * count / np.sum(entered_mask))
-
-            print(
-                f"{direction_name}: "
-                f"{count} "
-                f"({percentage:.2f}%)"
-            )
-
-    goal_history = np.asarray(
-        callback.history["goal_reached"]
-    )
-
-    entered_and_goal = (
-        entered_mask
-        & (goal_history == 1)
-    )
-
-    entered_without_goal = (
-        entered_mask
-        & (goal_history == 0)
-    )
-
-    if np.any(entered_and_goal):
-        print(
-            "Successful-entry average goal distance:",
-            np.mean(
-                entry_goal_distances[
-                    entered_and_goal
-                ]
-            )
-        )
-
-        print(
-            "Successful-entry average steps remaining:",
-            np.mean(
-                entry_steps_remaining[
-                    entered_and_goal
-                ]
-            )
-        )
-
-    if np.any(entered_without_goal):
-        print(
-            "Failed-entry average goal distance:",
-            np.mean(
-                entry_goal_distances[
-                    entered_without_goal
-                ]
-            )
-        )
-
-        print(
-            "Failed-entry average steps remaining:",
-            np.mean(
-                entry_steps_remaining[
-                    entered_without_goal
-                ]
-            )
-        )
-
-    def rolling_mean(values, window=100):
-        values = np.asarray(values, dtype=np.float32)
-
-        if len(values) < window:
-            return np.array([])
-
-        kernel = np.ones(window) / window
-
-        return np.convolve(
-            values,
-            kernel,
-            mode="valid"
-        )
 
     trajectory = env.all_trajectories[-1]
 
