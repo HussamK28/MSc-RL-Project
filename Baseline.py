@@ -212,9 +212,9 @@ class MetricsWrapper(gym.Wrapper):
         carrying_key1 = (carrying is not None and carrying.type == "key" and carrying.color == self.unwrapped.key1_colour)
         if carrying_key1 and door1_distance == 1:
             self.ep_door1_reached_with_key = True
-# Creates the MiniGrid environment of size 12x12 with a fixed layout and noisy TV disabled
+# Creates the MiniGrid environment of size 12x12 and noisy TV disabled
 def make_env():
-    env = MiniGrid(size=12, max_steps=400, noisy_tv=False, fixed_layout=True, render_mode=None)
+    env = MiniGrid(size=12, max_steps=400, noisy_tv=False, render_mode=None)
     # Get the agent visual observation and direction then flatten observation dictionary into a vector
     env = FilterObservation(env, ["image", "direction"])
     env = FlattenObservation(env)
