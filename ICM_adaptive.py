@@ -594,33 +594,41 @@ class MetricsWrapper(gym.Wrapper):
             if len(history) >= 20:
                 success_rates[stage] = float(np.mean(history))
         
-        if not success_rates:
-            self.current_bottleneck = None
-            return
-        # If the average success rate for that stage is 95% there is no bottleneck
-        if all(rate>=0.95 for rate in success_rates.values()):
-            self.current_bottleneck = None
-        else:
-            # Else we find the stage with the smallest success rate
-            self.current_bottleneck = min(success_rates, key=success_rates.get)
-            # Get the base reward rates for each stage
+        # Get the base reward rates for each stage
         self.door1_reward_scale = self.base_door1_reward_scale
         self.door2_reward_scale = self.base_door2_reward_scale
         self.entry_reward_scale = self.base_entry_reward_scale
         self.goal_reward_scale = self.base_goal_reward_scale
-
+        
+        # If history is insufficient or not avaliable return no bottleneck
+        if not success_rates:
+            self.current_bottleneck = None
+            return
+        # Define each potential bottleneck stage and minimum threshold of 80%
+        stage_order = ["door1", "door2", "final_room", "goal"]
+        bottleneck_threshold = 0.80
+        self.current_bottleneck = None
+        # If the average success rate for that stage is 80% there is no bottleneck
+        for stage in stage_order:
+            if stage in success_rates and success_rates[stage] < bottleneck_threshold:
+                self.current_bottleneck = stage
+            break
+        # If no bottleneck exist, return None
+        if self.current_bottleneck is None:
+            return
+        rate = success_rates[self.current_bottleneck]
         # If door1 is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
-        if "door1" in success_rates:
-            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, success_rates["door1"], self.bottleneck_scale)
+        if self.current_bottleneck == "door1":
+            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, rate, self.bottleneck_scale)
         # If door2 is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
-        if "door2" in success_rates:
-            self.door2_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, success_rates["door2"], self.bottleneck_scale)
+        elif self.current_bottleneck == "door2":
+            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, rate, self.bottleneck_scale)
         # If final room is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
-        if "final_room" in success_rates:
-            self.entry_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, success_rates["final_room"], self.bottleneck_scale)
+        elif self.current_bottleneck == "final_room":
+            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, rate, self.bottleneck_scale)
         # If goal is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
-        if "goal" in success_rates:
-            self.goal_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, success_rates["goal"], self.bottleneck_scale)
+        elif self.current_bottleneck == "goal":
+            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, rate, self.bottleneck_scale)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
