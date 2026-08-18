@@ -758,160 +758,46 @@ for seed in seeds:
     env = vec_env.envs[0]
     episodes = len(callback.history["success"])
 
-    # Calculate metrics for each seed
+# Calculate results per seed
     seed_result = {
         "seed": seed,
         "episodes": episodes,
         "success_rate": (np.mean(callback.history["success"]) if episodes > 0 else 0.0),
-        "coverage": (
-            np.mean(callback.history["state_coverage"])
-            if episodes > 0
-            else 0.0
-        ),
-        "last_100_coverage": mean_last(
-            callback.history["state_coverage"],
-            100
-        ),
-        "key1_rate": (
-            env.key1_reached / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "door1_rate": (
-            env.door1_opened / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "door1_with_key_rate": (
-            env.door1_reached_with_key / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "p_reach_door1_given_key1": (
-            env.door1_reached_with_key
-            / env.key1_reached
-            if env.key1_reached > 0
-            else 0.0
-        ),
-        "p_open_door1_given_reached": (
-            env.door1_opened
-            / env.door1_reached_with_key
-            if env.door1_reached_with_key > 0
-            else 0.0
-        ),
-        "door1_faced_with_key_rate": (
-            env.door1_faced_with_key / episodes
-            if episodes > 0
-            else 0.0
-        ),
-
-        "p_face_door1_given_reached": (
-            env.door1_faced_with_key
-            / env.door1_reached_with_key
-            if env.door1_reached_with_key > 0
-            else 0.0
-        ),
-
-        "p_open_door1_given_faced": (
-            env.door1_opened
-            / env.door1_faced_with_key
-            if env.door1_faced_with_key > 0
-            else 0.0
-        ),
+        "coverage": (np.mean(callback.history["state_coverage"]) if episodes > 0 else 0.0),
+        "last_100_coverage": mean_last(callback.history["state_coverage"], 100),
+        "key1_rate": (env.key1_reached / episodes if episodes > 0 else 0.0),
+        "door1_rate": (env.door1_opened / episodes if episodes > 0 else 0.0),
+        "door1_with_key_rate": (env.door1_reached_with_key / episodes if episodes > 0 else 0.0),
+        "p_reach_door1_given_key1": (env.door1_reached_with_key / env.key1_reached if env.key1_reached > 0 else 0.0),
+        "p_open_door1_given_reached": (env.door1_opened / env.door1_reached_with_key if env.door1_reached_with_key > 0 else 0.0),
+        "door1_faced_with_key_rate": (env.door1_faced_with_key / episodes if episodes > 0 else 0.0),
+        "p_face_door1_given_reached": (env.door1_faced_with_key / env.door1_reached_with_key if env.door1_reached_with_key > 0 else 0.0),
+        "p_open_door1_given_faced": (env.door1_opened / env.door1_faced_with_key if env.door1_faced_with_key > 0 else 0.0),
         "key1_count": env.key1_reached,
         "door1_reached_count": env.door1_reached_with_key,
         "door1_faced_count": env.door1_faced_with_key,
         "door1_opened_count": env.door1_opened,
-        "key2_rate": (
-            env.key2_reached / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "door2_rate": (
-            env.door2_opened / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "door2_with_key_rate": (
-            env.door2_reached_with_key / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "p_reach_door2_given_key2": (
-            env.door2_reached_with_key
-            / env.key2_reached
-            if env.key2_reached > 0
-            else 0.0
-        ),
-        "p_open_door2_given_reached": (
-            env.door2_opened
-            / env.door2_reached_with_key
-            if env.door2_reached_with_key > 0
-            else 0.0
-        ),
-        "door2_faced_with_key_rate": (
-            env.door2_faced_with_key / episodes
-            if episodes > 0
-            else 0.0
-        ),
-
-        "p_face_door2_given_reached": (
-            env.door2_faced_with_key
-            / env.door2_reached_with_key
-            if env.door2_reached_with_key > 0
-            else 0.0
-        ),
-
-        "p_open_door2_given_faced": (
-            env.door2_opened
-            / env.door2_faced_with_key
-            if env.door2_faced_with_key > 0
-            else 0.0
-        ),
+        "key2_rate": (env.key2_reached / episodes if episodes > 0 else 0.0),
+        "door2_rate": (env.door2_opened / episodes if episodes > 0 else 0.0),
+        "door2_with_key_rate": (env.door2_reached_with_key / episodes if episodes > 0 else 0.0),
+        "p_reach_door2_given_key2": (env.door2_reached_with_key / env.key2_reached if env.key2_reached > 0 else 0.0),
+        "p_open_door2_given_reached": (env.door2_opened / env.door2_reached_with_key if env.door2_reached_with_key > 0 else 0.0),
+        "door2_faced_with_key_rate": (env.door2_faced_with_key / episodes if episodes > 0 else 0.0),
+        "p_face_door2_given_reached": (env.door2_faced_with_key / env.door2_reached_with_key if env.door2_reached_with_key > 0 else 0.0),
+        "p_open_door2_given_faced": (env.door2_opened / env.door2_faced_with_key if env.door2_faced_with_key > 0 else 0.0),
         "key2_count": env.key2_reached,
         "door2_reached_count": env.door2_reached_with_key,
         "door2_faced_count": env.door2_faced_with_key,
         "door2_opened_count": env.door2_opened,
-        "final_room_rate": (
-            env.final_room_entered / episodes
-            if episodes > 0
-            else 0.0
-        ),
-
-        "goal_rate": (
-            env.goal_reached / episodes
-            if episodes > 0
-            else 0.0
-        ),
-
-        "p_enter_final_room_given_door2": (
-            env.final_room_entered
-            / env.door2_opened
-            if env.door2_opened > 0
-            else 0.0
-        ),
-
-        "p_goal_given_final_room": (
-            env.goal_reached
-            / env.final_room_entered
-            if env.final_room_entered > 0
-            else 0.0
-        ),
-
-        "p_goal_given_door2": (
-            env.goal_reached
-            / env.door2_opened
-            if env.door2_opened > 0
-            else 0.0
-        ),
-
+        "final_room_rate": (env.final_room_entered / episodes if episodes > 0 else 0.0),
+        "goal_rate": (env.goal_reached / episodes if episodes > 0 else 0.0),
+        "p_enter_final_room_given_door2": (env.final_room_entered / env.door2_opened if env.door2_opened > 0 else 0.0),
+        "p_goal_given_final_room": (env.goal_reached / env.final_room_entered if env.final_room_entered > 0 else 0.0),
+        "p_goal_given_door2": (env.goal_reached / env.door2_opened if env.door2_opened > 0 else 0.0),
         "final_room_count": env.final_room_entered,
         "goal_count": env.goal_reached,
-        "time_to_first_success": (
-            callback.history["success"].index(1) + 1
-            if 1 in callback.history["success"]
-            else np.nan
-        ),
+        "time_to_first_success": (callback.history["success"].index(1) + 1 if 1 in callback.history["success"] else np.nan),
+        
     }
 
     all_seed_results.append(seed_result)
@@ -1101,9 +987,9 @@ for seed in seeds:
     vec_env.close()
 
 
-print("\n==============================")
+print("\n-----------------------")
 print("MULTI-SEED RESULTS")
-print("==============================")
+print("-----------------------")
 
 metrics_to_summarise = [
     "success_rate",
@@ -1133,11 +1019,9 @@ metrics_to_summarise = [
     "p_goal_given_door2",
 ]
 
+# Print the mean and std of every metrics
 for metric in metrics_to_summarise:
-    values = np.asarray(
-        [result[metric] for result in all_seed_results],
-        dtype=np.float32
-    )
+    values = np.asarray([result[metric] for result in all_seed_results], dtype=np.float32)
 
     if metric == "time_to_first_success":
         mean = np.nanmean(values)
@@ -1146,65 +1030,19 @@ for metric in metrics_to_summarise:
         mean = np.mean(values)
         std = np.std(values)
 
-    print(
-        f"{metric}: "
-        f"{mean:.4f} "
-        f"± {std:.4f}"
-    )
+    print(f"{metric}: ")
+    print(f"{mean:.4f} ") 
+    print(f"± {std:.4f}")
 
-total_episodes = sum(
-    result["episodes"]
-    for result in all_seed_results
-)
-
-total_key1 = sum(
-    result["key1_count"]
-    for result in all_seed_results
-)
-
-total_door1_reached = sum(
-    result["door1_reached_count"]
-    for result in all_seed_results
-)
-
-total_door1_faced = sum(
-    result["door1_faced_count"]
-    for result in all_seed_results
-)
-
-total_door1_opened = sum(
-    result["door1_opened_count"]
-    for result in all_seed_results
-)
-
-
-total_key2 = sum(
-    result["key2_count"]
-    for result in all_seed_results
-)
-
-total_door2_reached = sum(
-    result["door2_reached_count"]
-    for result in all_seed_results
-)
-
-total_door2_faced = sum(
-    result["door2_faced_count"]
-    for result in all_seed_results
-)
-
-total_door2_opened = sum(
-    result["door2_opened_count"]
-    for result in all_seed_results
-)
-
-total_final_room = sum(
-    result["final_room_count"]
-    for result in all_seed_results
-)
-
-total_goal = sum(
-    result["goal_count"]
-    for result in all_seed_results
-)
+total_episodes = sum(result["episodes"] for result in all_seed_results)
+total_key1 = sum(result["key1_count"] for result in all_seed_results)
+total_door1_reached = sum(result["door1_reached_count"] for result in all_seed_results)
+total_door1_faced = sum(result["door1_faced_count"] for result in all_seed_results)
+total_door1_opened = sum(result["door1_opened_count"] for result in all_seed_results)
+total_key2 = sum(result["key2_count"] for result in all_seed_results)
+total_door2_reached = sum(result["door2_reached_count"]for result in all_seed_results)
+total_door2_faced = sum(result["door2_faced_count"] for result in all_seed_results)
+total_door2_opened = sum(result["door2_opened_count"]for result in all_seed_results)
+total_final_room = sum(result["final_room_count"] for result in all_seed_results)
+total_goal = sum(result["goal_count"] for result in all_seed_results)
 
