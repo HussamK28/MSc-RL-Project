@@ -32,17 +32,6 @@ class IntrinsicAnnealingCallback(BaseCallback):
         self.training_env.envs[0].intrinsic_reward_scale = scale
         return True
 
-class EntropyAnnealingCallback(BaseCallback):
-    def __init__(self, total_timesteps, start=0.02, end=0.003):
-        super().__init__()
-        self.total_timesteps = total_timesteps
-        self.start = start
-        self.end = end
-    
-    def _on_step(self):
-        fraction = min(self.num_timesteps / self.total_timesteps, 1.0)
-        self.model.ent_coef = self.start + fraction * (self.end - self.start)
-        return True
 
 class MetricsCallback(BaseCallback):
     def __init__(self):
@@ -723,7 +712,6 @@ class MetricsWrapper(gym.Wrapper):
         noise_reward_scale = (self.minimum_noise_scale + (1.0 - self.minimum_noise_scale) * noise_score)
         noise_hybrid_reward = hybrid_reward * noise_reward_scale
 
-        #curiosity_dampening = (self.final_room_curiosity_scale if self.ep_final_room_entered else 1.0)
         intrinsic_reward = noise_hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
@@ -946,7 +934,7 @@ class MetricsWrapper(gym.Wrapper):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-temp_env = MiniGrid(size=12, max_steps=400, noisy_tv=True, render_mode=None)
+temp_env = MiniGrid(size=12, max_steps=400, noisy_tv=True, render_mode='human')
 temp_env = FilterObservation(temp_env, ["image", "direction"])
 temp_env = FlattenObservation(temp_env)
 
@@ -962,7 +950,7 @@ def make_env(icm, icm_optimiser):
             size=12,
             max_steps=400,
             noisy_tv=True,
-            render_mode=None
+            render_mode='human'
         )
 
         env = FilterObservation(env,["image", "direction"])
@@ -1051,12 +1039,6 @@ for seed in seeds:
         ent_coef=0.02,
         vf_coef=0.5,
         max_grad_norm=0.5,
-        policy_kwargs={
-            "net_arch": {
-                "pi": [256, 256],
-                "vf": [256, 256]
-            }
-        },
         verbose=1,
         seed=seed
     )
@@ -1064,7 +1046,6 @@ for seed in seeds:
     callback = MetricsCallback()
     total_timesteps = 1_000_000
     annealing_callback = IntrinsicAnnealingCallback(total_timesteps=total_timesteps, start=1.0, end=0.15)
-    #entropy_callback = EntropyAnnealingCallback(total_timesteps=total_timesteps, start=0.02, end=0.003)
 
     model.learn(total_timesteps=total_timesteps,callback=CallbackList([annealing_callback, callback]))
 
@@ -1330,293 +1311,6 @@ for seed in seeds:
         print("Average intrinsic scale:", np.mean(callback.history["mean_intrinsic_scale"]))
         print("Intrinsic scale over last 100 episodes:", mean_last(callback.history["mean_intrinsic_scale"], 100))
 
-        print("\n--- Bottleneck Awareness ---")
-        print("Current bottleneck:", env.current_bottleneck)
-
-        for stage, history in env.bottleneck_history.items():
-            if len(history) > 0:
-                print(
-                    f"{stage} recent success rate: "
-                    f"{np.mean(history) * 100:.2f}% "
-                    f"({len(history)} eligible episodes)"
-                )
-            else:
-                print(f"{stage} recent success rate: No data")
-
-        print("\n--- Adaptive Reward Scales ---")
-
-        print("Current Door1 reward scale:", env.door1_reward_scale)
-        print("Current Door2 reward scale:", env.door2_reward_scale)
-        print("Current final-room reward scale:", env.entry_reward_scale)
-        print("Current goal reward scale:", env.goal_reward_scale)
-        
-        if np.any(entered_mask):
-            print("Average goal distance at final-room entry:",np.mean(entry_goal_distances[entered_mask]))
-            print("Average steps remaining at final-room entry:", np.mean(entry_steps_remaining[entered_mask]))
-            print("P(exit final room | entered):",np.mean(exited_final_room[entered_mask]) * 100,"%")
-
-        successful_entry_mask = steps_entry_to_goal >= 0
-
-        if np.any(successful_entry_mask):
-            print("Average steps from final-room entry to goal:",np.mean(steps_entry_to_goal[successful_entry_mask]))
-        else:
-            print("Average steps from final-room entry to goal:","No successful entries")
-
-        action_names = [
-        "left",
-        "right",
-        "forward",
-        "pickup",
-        "drop",
-        "toggle",
-        "done"
-    ]
-
-        print("\n--- Action Diagnostics ---")
-
-        print("After Key1:")
-        for i, name in enumerate(action_names):
-            print(
-                f"{name}: "
-                f"{env.total_after_key1_action_counts[i]}"
-            )
-
-        print("\nWhile currently facing Door1 with Key1:")
-        for i, name in enumerate(action_names):
-            print(
-                f"{name}: "
-                f"{env.total_facing_door1_action_counts[i]}"
-            )
-        
-        last100_after_key1 = np.sum(
-            callback.history["after_key1_action_counts"][-100:],
-            axis=0
-        )
-
-        last100_facing_door1 = np.sum(
-            callback.history["facing_door1_action_counts"][-100:],
-            axis=0
-        )
-
-        print("\n--- LAST 100 ACTION DIAGNOSTICS ---")
-
-        print("After Key1:")
-        for i, name in enumerate(action_names):
-            print(f"{name}: {last100_after_key1[i]}")
-
-        print("\nWhile currently facing Door1 with Key1:")
-        for i, name in enumerate(action_names):
-            print(f"{name}: {last100_facing_door1[i]}")
-        
-        last100_after_door1 = np.sum(
-    callback.history["after_door1_action_counts"][-100:],
-    axis=0
-)
-
-        last100_facing_key2 = np.sum(
-            callback.history["facing_key2_action_counts"][-100:],
-            axis=0
-        )
-
-        print("\n--- LAST 100 KEY2 ACTION DIAGNOSTICS ---")
-
-        print("After Door1 opens:")
-        for i, name in enumerate(action_names):
-            print(f"{name}: {last100_after_door1[i]}")
-
-        print("\nWhile currently facing Key2:")
-        for i, name in enumerate(action_names):
-            print(f"{name}: {last100_facing_key2[i]}")
-        print("Current Key2 reward scale:", env.key2_reward_scale)
-
-        last100_key2_distances = [
-            d for d in callback.history["min_key2_distance"][-100:]
-            if d >= 0
-        ]
-
-        if last100_key2_distances:
-            print(
-                "Average minimum Key2 distance over last 100 eligible episodes:",
-                np.mean(last100_key2_distances)
-            )
-        else:
-            print(
-                "Average minimum Key2 distance over last 100 eligible episodes:",
-                "No Door1-open episodes"
-            )
-        
-        last100_final_room_distances = [
-            d for d in callback.history["min_final_room_distance"][-100:]
-            if d >= 0
-        ]
-
-        if last100_final_room_distances:
-            print(
-                "Average minimum final-room distance over last 100 eligible episodes:",
-                np.mean(last100_final_room_distances)
-            )
-        
-        last100_after_door2 = np.sum(
-            callback.history["after_door2_action_counts"][-100:],
-            axis=0
-        )
-
-        last100_facing_open_door2 = np.sum(
-            callback.history["facing_open_door2_action_counts"][-100:],
-            axis=0
-        )
-
-        print("\n--- LAST 100 FINAL-ROOM ACTION DIAGNOSTICS ---")
-
-        print("After Door2 opens:")
-        for i, name in enumerate(action_names):
-            print(f"{name}: {last100_after_door2[i]}")
-
-        print("\nWhile facing OPEN Door2:")
-        for i, name in enumerate(action_names):
-            print(f"{name}: {last100_facing_open_door2[i]}")
-        
-        last100_on_open_door2 = np.sum(
-            callback.history["on_open_door2_action_counts"][-100:],
-            axis=0
-        )
-        print("\nWhile standing ON open Door2:")
-        for i, name in enumerate(action_names):
-            print(f"{name}: {last100_on_open_door2[i]}")
-        
-        last100_goal_distances = [
-            d for d in callback.history["min_goal_distance"][-100:]
-            if d >= 0
-        ]
-
-        if last100_goal_distances:
-            print(
-                "Average minimum goal distance over last 100 eligible episodes:",
-                np.mean(last100_goal_distances)
-            )
-        else:
-            print(
-                "Average minimum goal distance over last 100 eligible episodes:",
-                "No final-room entries"
-            )
-        
-        last100_inside_final_room = np.sum(
-    callback.history["inside_final_room_action_counts"][-100:],
-    axis=0
-)
-
-    last100_facing_goal = np.sum(
-        callback.history["facing_goal_action_counts"][-100:],
-        axis=0
-    )
-
-    print("\n--- LAST 100 GOAL ACTION DIAGNOSTICS ---")
-
-    print("While inside final room:")
-    for i, name in enumerate(action_names):
-        print(f"{name}: {last100_inside_final_room[i]}")
-
-    print("\nWhile facing Goal:")
-    for i, name in enumerate(action_names):
-        print(f"{name}: {last100_facing_goal[i]}")
-    
-    last100_on_door2_facing_final_room = np.sum(
-        callback.history["on_door2_facing_final_room_action_counts"][-100:],
-        axis=0
-    )
-
-    print("\nWhile ON Door2 and FACING INTO final room:")
-    for i, name in enumerate(action_names):
-        print(f"{name}: {last100_on_door2_facing_final_room[i]}")
-
-        
-
-    direction_names = {
-    0: "right",
-    1: "down",
-    2: "left",
-    3: "up"
-}
-
-    if np.any(entered_mask):
-        print("Final-room entry directions:")
-
-        for direction_id, direction_name in direction_names.items():
-            count = np.sum(entry_directions[entered_mask] == direction_id)
-
-            percentage = (100 * count / np.sum(entered_mask))
-
-            print(
-                f"{direction_name}: "
-                f"{count} "
-                f"({percentage:.2f}%)"
-            )
-
-    goal_history = np.asarray(
-        callback.history["goal_reached"]
-    )
-
-    entered_and_goal = (
-        entered_mask
-        & (goal_history == 1)
-    )
-
-    entered_without_goal = (
-        entered_mask
-        & (goal_history == 0)
-    )
-
-    if np.any(entered_and_goal):
-        print(
-            "Successful-entry average goal distance:",
-            np.mean(
-                entry_goal_distances[
-                    entered_and_goal
-                ]
-            )
-        )
-
-        print(
-            "Successful-entry average steps remaining:",
-            np.mean(
-                entry_steps_remaining[
-                    entered_and_goal
-                ]
-            )
-        )
-
-    if np.any(entered_without_goal):
-        print(
-            "Failed-entry average goal distance:",
-            np.mean(
-                entry_goal_distances[
-                    entered_without_goal
-                ]
-            )
-        )
-
-        print(
-            "Failed-entry average steps remaining:",
-            np.mean(
-                entry_steps_remaining[
-                    entered_without_goal
-                ]
-            )
-        )
-
-    def rolling_mean(values, window=100):
-        values = np.asarray(values, dtype=np.float32)
-
-        if len(values) < window:
-            return np.array([])
-
-        kernel = np.ones(window) / window
-
-        return np.convolve(
-            values,
-            kernel,
-            mode="valid"
-        )
 
     trajectory = env.all_trajectories[-1]
 
