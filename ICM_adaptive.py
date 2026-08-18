@@ -730,12 +730,6 @@ for seed in seeds:
         ent_coef=0.02,
         vf_coef=0.5,
         max_grad_norm=0.5,
-        policy_kwargs={
-            "net_arch": {
-                "pi": [256, 256],
-                "vf": [256, 256]
-            }
-        },
         verbose=1,
         seed=seed
     )
