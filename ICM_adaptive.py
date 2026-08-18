@@ -612,7 +612,7 @@ class MetricsWrapper(gym.Wrapper):
         for stage in stage_order:
             if stage in success_rates and success_rates[stage] < bottleneck_threshold:
                 self.current_bottleneck = stage
-            break
+                break
         # If no bottleneck exist, return None
         if self.current_bottleneck is None:
             return
