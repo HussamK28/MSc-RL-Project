@@ -590,46 +590,6 @@ class MetricsWrapper(gym.Wrapper):
         info["intrinsic_reward"] = total_intrinsic_reward
         info["hybrid_reward"] = hybrid_reward
 
-        info["door1_progress_reward"] = door1_progress_reward
-        info["scaled_door1_reward"] = scaled_door1_reward
-        info["door1_completion_bonus"] = door1_completion_bonus
-
-        info["door2_progress_reward"] = door2_progress_reward
-        info["scaled_door2_reward"] = scaled_door2_reward
-        info["door2_completion_bonus"] = door2_completion_bonus
-
-        info["entry_progress_reward"] = (entry_progress_reward)
-        info["scaled_entry_reward"] = (scaled_entry_reward)
-
-        info["goal_progress_reward"] = goal_progress_reward
-        info["scaled_goal_reward"] = scaled_goal_reward
-        info["final_room_entry_bonus"] = final_room_entry_bonus
-        info["final_room_exit_penalty"] = final_room_exit_penalty
-        info["final_room_entered"] = int(self.ep_final_room_entered)
-
-        info["prediction_error"] = prediction_error
-        info["learning_progress"] = learning_progress
-        info["scaled_prediction_error"] = scaled_prediction_error
-        info["scaled_learning_progress"] = scaled_learning_progress
-
-        info["fast_pred_error"] = float(state_fast_error)
-        info["slow_pred_error"] = float(state_slow_error)
-        info["icm_forward_loss"] = float(forward_loss.item())
-        info["icm_inverse_loss"] = float(inverse_loss.item())
-
-        info["noise_reward_scale"] = noise_reward_scale
-        info["noise_hybrid_reward"] = noise_hybrid_reward
-
-        info["key2_progress_reward"] = key2_progress_reward
-        info["scaled_key2_reward"] = scaled_key2_reward
-        info["key2_completion_bonus"] = key2_completion_bonus
-        info["final_room_forward_bonus"] = final_room_forward_bonus
-
-        info["goal_facing_bonus"] = goal_facing_bonus
-        info["goal_forward_bonus"] = goal_forward_bonus
-
-
-
         self.episode_return += total_reward
         self.episode_intrinsic_reward += total_intrinsic_reward
         self.episode_extrinsic_return += extrinsic_reward
