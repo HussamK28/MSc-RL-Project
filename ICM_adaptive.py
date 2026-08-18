@@ -739,7 +739,13 @@ for seed in seeds:
         vf_coef=0.5,
         max_grad_norm=0.5,
         verbose=1,
-        seed=seed
+        seed=seed,
+        policy_kwargs={
+        "net_arch": {
+            "pi": [256, 256],
+            "vf": [256, 256]
+        }
+    },
     )
 
     total_timesteps = 500_000
@@ -1171,42 +1177,6 @@ total_door1_opened = sum(
     for result in all_seed_results
 )
 
-print("\n==============================")
-print("POOLED EVENT COUNTS")
-print("==============================")
-
-print("Total episodes:", total_episodes)
-print("Key1 collected:", total_key1)
-print("Door1 reached with Key1:", total_door1_reached)
-print("Door1 faced with Key1:", total_door1_faced)
-print("Door1 opened:", total_door1_opened)
-
-print(
-    "P(reach Door1 | Key1):",
-    convert_to_percentage(
-        total_door1_reached,
-        total_key1
-    ),
-    "%"
-)
-
-print(
-    "P(face Door1 | reached):",
-    convert_to_percentage(
-        total_door1_faced,
-        total_door1_reached
-    ),
-    "%"
-)
-
-print(
-    "P(open Door1 | faced):",
-    convert_to_percentage(
-        total_door1_opened,
-        total_door1_faced
-    ),
-    "%"
-)
 
 total_key2 = sum(
     result["key2_count"]
@@ -1238,81 +1208,3 @@ total_goal = sum(
     for result in all_seed_results
 )
 
-print("Key2 collected:", total_key2)
-
-print(
-    "Door2 reached with Key2:",
-    total_door2_reached
-)
-
-print(
-    "Door2 faced with Key2:",
-    total_door2_faced
-)
-
-print("Door2 opened:", total_door2_opened)
-
-print(
-    "P(reach Door2 | Key2):",
-    convert_to_percentage(
-        total_door2_reached,
-        total_key2
-    ),
-    "%"
-)
-
-print(
-    "P(face Door2 | reached):",
-    convert_to_percentage(
-        total_door2_faced,
-        total_door2_reached
-    ),
-    "%"
-)
-
-print(
-    "P(open Door2 | faced):",
-    convert_to_percentage(
-        total_door2_opened,
-        total_door2_faced
-    ),
-    "%"
-)
-
-
-print(
-    "Final room entered:",
-    total_final_room
-)
-
-print(
-    "Goal reached:",
-    total_goal
-)
-
-print(
-    "P(enter final room | Door2 opened):",
-    convert_to_percentage(
-        total_final_room,
-        total_door2_opened
-    ),
-    "%"
-)
-
-print(
-    "P(goal | final room entered):",
-    convert_to_percentage(
-        total_goal,
-        total_final_room
-    ),
-    "%"
-)
-
-print(
-    "P(goal | Door2 opened):",
-    convert_to_percentage(
-        total_goal,
-        total_door2_opened
-    ),
-    "%"
-)
