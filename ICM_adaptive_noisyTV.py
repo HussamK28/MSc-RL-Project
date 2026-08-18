@@ -573,7 +573,7 @@ class MetricsWrapper(gym.Wrapper):
         # Calculating updated intrinsic reward by adding the minimum noise score add supressing noisy scores that are useless 
         noise_reward_scale = (self.minimum_noise_scale + (1.0 - self.minimum_noise_scale) * noise_score)
         noise_hybrid_reward = hybrid_reward * noise_reward_scale
-
+        # Update intrinsic reward
         intrinsic_reward = noise_hybrid_reward * self.intrinsic_reward_scale
         scaled_door1_reward = (self.door1_reward_scale * door1_progress_reward)
         scaled_door2_reward = (self.door2_reward_scale * door2_progress_reward)
@@ -653,7 +653,7 @@ class MetricsWrapper(gym.Wrapper):
 
 
         done = terminated or truncated
-        
+
         if done:
             self.all_trajectories.append(self.episode_trajectory.copy())
             self.completed_episodes.append({
@@ -795,24 +795,10 @@ icm_optimiser = torch.optim.Adam(icm.parameters(), lr=1e-4)
 
 def make_env(icm, icm_optimiser):
     def _init():
-        env = MiniGrid(
-            size=12,
-            max_steps=400,
-            noisy_tv=True,
-            render_mode=None
-        )
-
+        env = MiniGrid(size=12, max_steps=400, noisy_tv=True, render_mode=None)
         env = FilterObservation(env,["image", "direction"])
-
         env = FlattenObservation(env)
-
-        env = MetricsWrapper(
-            env,
-            icm=icm,
-            icm_optimiser=icm_optimiser,
-            device=device
-        )
-
+        env = MetricsWrapper(env, icm=icm, icm_optimiser=icm_optimiser, device=device)
         return env
 
     return _init
@@ -861,15 +847,9 @@ for seed in seeds:
 
     set_all_seeds(seed)
 
-    icm = ICM(
-        obs_dim,
-        action_dim
-    ).to(device)
+    icm = ICM(obs_dim, action_dim).to(device)
 
-    icm_optimiser = torch.optim.Adam(
-        icm.parameters(),
-        lr=1e-4
-    )
+    icm_optimiser = torch.optim.Adam(icm.parameters(),lr=1e-4)
     vec_env = DummyVecEnv([make_env(icm,icm_optimiser)])
     vec_env.seed(seed)
     vec_env.reset()
@@ -910,41 +890,13 @@ for seed in seeds:
     seed_result = {
         "seed": seed,
         "episodes": episodes,
-        "success_rate": (
-            np.mean(callback.history["success"])
-            if episodes > 0
-            else 0.0
-        ),
-        "coverage": (
-            np.mean(callback.history["state_coverage"])
-            if episodes > 0
-            else 0.0
-        ),
-        "last_100_coverage": mean_last(
-            callback.history["state_coverage"],
-            100
-        ),
-        "key1_rate": (
-            env.key1_reached / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "door1_rate": (
-            env.door1_opened / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "door1_with_key_rate": (
-            env.door1_reached_with_key / episodes
-            if episodes > 0
-            else 0.0
-        ),
-        "p_reach_door1_given_key1": (
-            env.door1_reached_with_key
-            / env.key1_reached
-            if env.key1_reached > 0
-            else 0.0
-        ),
+        "success_rate": (np.mean(callback.history["success"]) if episodes > 0 else 0.0),
+        "coverage": (np.mean(callback.history["state_coverage"]) if episodes > 0 else 0.0),
+        "last_100_coverage": mean_last(callback.history["state_coverage"], 100),
+        "key1_rate": (env.key1_reached / episodes if episodes > 0 else 0.0),
+        "door1_rate": (env.door1_opened / episodes if episodes > 0 else 0.0),
+        "door1_with_key_rate": (env.door1_reached_with_key / episodes if episodes > 0 else 0.0),
+        "p_reach_door1_given_key1": (env.door1_reached_with_key / env.key1_reached if env.key1_reached > 0 else 0.0),
         "p_open_door1_given_reached": (env.door1_opened / env.door1_reached_with_key if env.door1_reached_with_key > 0 else 0.0),
         "door1_faced_with_key_rate": (env.door1_faced_with_key / episodes if episodes > 0 else 0.0),
         "p_face_door1_given_reached": (env.door1_faced_with_key / env.door1_reached_with_key if env.door1_reached_with_key > 0 else 0.0),
