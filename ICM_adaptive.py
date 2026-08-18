@@ -622,13 +622,13 @@ class MetricsWrapper(gym.Wrapper):
             self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door1_reward_scale, rate, self.bottleneck_scale)
         # If door2 is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
         elif self.current_bottleneck == "door2":
-            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, rate, self.bottleneck_scale)
+            self.door2_reward_scale = self.adaptive_bottleneck_scale(self.base_door2_reward_scale, rate, self.bottleneck_scale)
         # If final room is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
         elif self.current_bottleneck == "final_room":
-            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, rate, self.bottleneck_scale)
+            self.entry_reward_scale = self.adaptive_bottleneck_scale(self.base_entry_reward_scale, rate, self.bottleneck_scale)
         # If goal is bottleneck, we feed base reward scale, its success rate and the bottleneck scale of 2.0 to helper function
         elif self.current_bottleneck == "goal":
-            self.door1_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, rate, self.bottleneck_scale)
+            self.goal_reward_scale = self.adaptive_bottleneck_scale(self.base_goal_reward_scale, rate, self.bottleneck_scale)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
