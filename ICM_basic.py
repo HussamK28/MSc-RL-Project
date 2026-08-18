@@ -346,7 +346,13 @@ for seed in seeds:
         # Clips gradients at 50% to improve optimisation
         max_grad_norm=0.5,
         verbose=1,
-        seed=seed
+        seed=seed,
+        policy_kwargs={
+        "net_arch": {
+            "pi": [256, 256],
+            "vf": [256, 256]
+        }
+    },
     )
     # Train the model for the specifed timesteps and collect the metrics before saving them to a file
     callback = MetricsCallback()
